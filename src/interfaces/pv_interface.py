@@ -1228,10 +1228,10 @@ class PvInterface:
                 pv_forecast = forecast_15min
 
             # Apply scaling factor
-            try:
-                scale_factor = float(solar_forecast_scale)
-            except (TypeError, ValueError):
-                scale_factor = 1.0
+            #try:
+            #    scale_factor = float(solar_forecast_scale)
+            #except (TypeError, ValueError):
+            scale_factor = 1.0
 
             if scale_factor <= 0:
                 logger.debug(
