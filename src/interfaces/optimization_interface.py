@@ -167,9 +167,9 @@ class OptimizationInterface:
             else 0
         )
 
-        ac_charge_demand_relative = None
-        dc_charge_demand_relative = None
-        discharge_allowed = None
+        ac_charge_demand_relative = 0
+        dc_charge_demand_relative = 0
+        discharge_allowed = True
         dyn_override_allowed_array = []  # Array to store override states for all slots
         response_error = False
 
@@ -326,6 +326,15 @@ class OptimizationInterface:
         else:
             logger.error("[OPTIMIZATION] No control data in optimized response")
             response_error = True
+
+        if response_error:
+            # Set safe defaults in last_control_data
+            self.last_control_data[0]["ac_charge_demand"] = 0
+            self.last_control_data[0]["dc_charge_demand"] = 0
+            self.last_control_data[0]["discharge_allowed"] = True
+            self.last_control_data[1]["ac_charge_demand"] = 0
+            self.last_control_data[1]["dc_charge_demand"] = 0
+            self.last_control_data[1]["discharge_allowed"] = True
 
         self.last_control_data[0]["error"] = int(response_error)
         self.last_control_data[1]["error"] = int(response_error)
