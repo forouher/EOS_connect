@@ -1046,25 +1046,30 @@ class OptimizationScheduler:
             )
             return
 
-        if error is not True:
-            # logger.debug(
-            #     "[Main] Optimization fast control loop - current state: %s (Num: %s) "+
-            #     "-> ac_charge_demand: %s, dc_charge_demand: %s, discharge_allowed: %s",
-            #     base_control.get_current_overall_state(),
-            #     base_control.get_current_overall_state_number(),
-            #     ac_charge_demand,
-            #     dc_charge_demand,
-            #     discharge_allowed,
-            # )
-            setting_control_data(ac_charge_demand, dc_charge_demand, discharge_allowed)
-            # get recent evcc states
-            base_control.set_current_evcc_charging_state(
-                evcc_interface.get_charging_state()
-            )
-            base_control.set_current_evcc_charging_mode(
-                evcc_interface.get_charging_mode()
-            )
-            change_control_state()
+        # On error, default to safe mode: no charging, discharge allowed
+        if error is True:
+            ac_charge_demand = 0
+            dc_charge_demand = 0
+            discharge_allowed = True
+
+        # logger.debug(
+        #     "[Main] Optimization fast control loop - current state: %s (Num: %s) "+
+        #     "-> ac_charge_demand: %s, dc_charge_demand: %s, discharge_allowed: %s",
+        #     base_control.get_current_overall_state(),
+        #     base_control.get_current_overall_state_number(),
+        #     ac_charge_demand,
+        #     dc_charge_demand,
+        #     discharge_allowed,
+        # )
+        setting_control_data(ac_charge_demand, dc_charge_demand, discharge_allowed)
+        # get recent evcc states
+        base_control.set_current_evcc_charging_state(
+            evcc_interface.get_charging_state()
+        )
+        base_control.set_current_evcc_charging_mode(
+            evcc_interface.get_charging_mode()
+        )
+        change_control_state()
         # logger.debug(
         #     "[Main] Optimization control loop - secondly check - current state: %s (Num: %s)",
         #     base_control.get_current_overall_state(),
