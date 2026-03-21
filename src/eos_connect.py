@@ -19,8 +19,6 @@ from constants import CURRENCY_SYMBOL_MAP, CURRENCY_MINOR_UNIT_MAP
 from interfaces.base_control import BaseControl
 from interfaces.load_interface import LoadInterface
 from interfaces.battery_interface import BatteryInterface
-from interfaces.inverter_fronius import FroniusWR
-from interfaces.inverter_fronius_v2 import FroniusWRV2
 from interfaces.evcc_interface import EvccInterface
 from interfaces.optimization_interface import OptimizationInterface
 from interfaces.price_interface import PriceInterface
@@ -28,6 +26,9 @@ from interfaces.mqtt_interface import MqttInterface
 from interfaces.pv_interface import PvInterface
 from interfaces.port_interface import PortInterface
 from interfaces.update_checker import UpdateChecker
+from interfaces.inverters import create_inverter
+from interfaces.inverters.null_inverter import NullInverter
+from interfaces.inverters.evcc_inverter import EvccInverter
 
 # Check Python version early
 if sys.version_info < (3, 11):
@@ -141,56 +142,13 @@ base_control = BaseControl(config_manager.config, time_zone, time_frame_base)
 # initialize the inverter interface
 inverter_interface = None
 
-# Handle backward compatibility for old interface names
-inverter_type = config_manager.config["inverter"]["type"]
-if inverter_type == "fronius_gen24_v2":
-    logger.warning(
-        "[Config] Interface name 'fronius_gen24_v2' is deprecated. "
-        "Please update your config.yaml to use 'fronius_gen24' instead. "
-        "Using enhanced interface for compatibility."
-    )
-    inverter_type = "fronius_gen24"  # Auto-migrate to new name
-
-if inverter_type == "fronius_gen24":
-    # Enhanced V2 interface (default for existing users)
-    logger.info(
-        "[Inverter] Using enhanced Fronius GEN24 interface with firmware-based authentication"
-    )
-    inverter_config = {
-        "address": config_manager.config["inverter"]["address"],
-        "max_grid_charge_rate": config_manager.config["inverter"][
-            "max_grid_charge_rate"
-        ],
-        "max_pv_charge_rate": config_manager.config["inverter"]["max_pv_charge_rate"],
-        "user": config_manager.config["inverter"]["user"],
-        "password": config_manager.config["inverter"]["password"],
-    }
-    inverter_interface = FroniusWRV2(inverter_config)
-elif inverter_type == "fronius_gen24_legacy":
-    # Legacy V1 interface (for corner cases)
-    logger.info(
-        "[Inverter] Using legacy Fronius GEN24 interface (V1) for compatibility"
-    )
-    inverter_config = {
-        "address": config_manager.config["inverter"]["address"],
-        "max_grid_charge_rate": config_manager.config["inverter"][
-            "max_grid_charge_rate"
-        ],
-        "max_pv_charge_rate": config_manager.config["inverter"]["max_pv_charge_rate"],
-        "user": config_manager.config["inverter"]["user"],
-        "password": config_manager.config["inverter"]["password"],
-    }
-    inverter_interface = FroniusWR(inverter_config)
-elif inverter_type == "evcc":
-    logger.info(
-        "[Inverter] Inverter type %s - using the universal evcc external battery control.",
-        inverter_type,
-    )
+# Call factory via config dict
+inverter_interface = create_inverter(config_manager.config["inverter"])
+if inverter_interface is not None:
+    inverter_interface.initialize()
 else:
-    logger.info(
-        "[Inverter] Inverter type %s - no external connection."
-        + " Changing to show only mode.",
-        config_manager.config["inverter"]["type"],
+    logger.error(
+        "[Main] Failed to initialize inverter interface - check inverter configuration"
     )
 
 
@@ -559,6 +517,20 @@ def create_optimize_request():
             else config_manager.config["battery"]["max_charge_power_w"]
         )
 
+        # Debug logging for charge demand tracking
+        is_dynamic = config_manager.config["battery"].get(
+            "charging_curve_enabled", True
+        )
+        logger.info(
+            "[CHARGE_DEMAND] Optimizer request preparation: max_charge_power=%s W "
+            "(source=%s, dynamic_max=%s, config_fixed=%s, charging_curve_enabled=%s)",
+            max_charge_power,
+            "dynamic" if is_dynamic else "fixed",
+            current_dynamic_max,
+            config_manager.config["battery"]["max_charge_power_w"],
+            is_dynamic,
+        )
+
         # Store this value in base_control so it can use the same value when
         # converting relative charge demands back to absolute values
         # This prevents sawtooth patterns caused by mismatched max_charge_power values
@@ -701,6 +673,12 @@ def setting_control_data(ac_charge_demand_rel, dc_charge_demand_rel, discharge_a
     base_control.set_current_dc_charge_demand(dc_charge_demand_rel)
     base_control.set_current_discharge_allowed(bool(discharge_allowed))
 
+    # Set the dynamic override discharge allowed active flag from latest optimization data
+    dyn_override_active = eos_interface.get_last_control_data()[0].get(
+        "dyn_override_active", False
+    )
+    base_control.set_dyn_override_discharge_allowed_active(dyn_override_active)
+
     # set the current battery state of charge
     base_control.set_current_battery_soc(battery_interface.get_current_soc())
     # getting the current charging state from evcc
@@ -708,11 +686,11 @@ def setting_control_data(ac_charge_demand_rel, dc_charge_demand_rel, discharge_a
     base_control.set_current_evcc_charging_mode(evcc_interface.get_charging_mode())
 
     # Publish MQTT after all states are set to reflect the final combined state
+    ac_power_for_mqtt = base_control.get_needed_ac_charge_power()
+    # Only log MQTT publish on change (logging happens in get_needed_ac_charge_power)
     mqtt_interface.update_publish_topics(
         {
-            "control/eos_ac_charge_demand": {
-                "value": base_control.get_needed_ac_charge_power()
-            },
+            "control/eos_ac_charge_demand": {"value": ac_power_for_mqtt},
             "control/eos_dc_charge_demand": {
                 "value": base_control.get_current_dc_charge_demand()
             },
@@ -775,6 +753,7 @@ class OptimizationScheduler:
         self._update_thread_optimization_loop = None
         self._stop_event = threading.Event()
         self._last_avg_runtime = 120  # Initialize with a default value
+        self._last_dyn_override_array = []  # Initialize override array for chart
         self.__start_update_service_optimization_loop()
         self._update_thread_control_loop = None
         self._stop_event_control_loop = threading.Event()
@@ -794,6 +773,12 @@ class OptimizationScheduler:
         Returns the current state of the optimization scheduler.
         """
         return self.current_state
+
+    def get_last_dyn_override_array(self):
+        """
+        Returns the last dynamic override array for all time slots.
+        """
+        return self._last_dyn_override_array
 
     def __set_state_request(self):
         """
@@ -962,11 +947,17 @@ class OptimizationScheduler:
         ) as file:
             json.dump(optimized_response, file, indent=4)
         # +++++++++
-        ac_charge_demand, dc_charge_demand, discharge_allowed, error = (
-            eos_interface.examine_response_to_control_data(optimized_response)
-        )
+        (
+            ac_charge_demand,
+            dc_charge_demand,
+            discharge_allowed,
+            error,
+            dyn_override_array,
+        ) = eos_interface.examine_response_to_control_data(optimized_response)
         if error is not True:
             setting_control_data(ac_charge_demand, dc_charge_demand, discharge_allowed)
+            # Store the override array for API response
+            self._last_dyn_override_array = dyn_override_array
             # get recent evcc states
             base_control.set_current_evcc_charging_state(
                 evcc_interface.get_charging_state()
@@ -1116,7 +1107,10 @@ class OptimizationScheduler:
         self.__start_update_service_data_loop()
 
     def __run_data_loop(self):
-        if inverter_type in ["fronius_gen24", "fronius_gen24_legacy"]:
+        if (
+            inverter_interface is not None
+            and inverter_interface.supports_extended_monitoring
+        ):
             inverter_interface.fetch_inverter_data()
             mqtt_interface.update_publish_topics(
                 {
@@ -1205,10 +1199,15 @@ def change_control_state():
     """
     inverter_fronius_en = False
     inverter_evcc_en = False
-    if inverter_type in ["fronius_gen24", "fronius_gen24_legacy"]:
-        inverter_fronius_en = True
-    elif config_manager.config["inverter"]["type"] == "evcc":
-        inverter_evcc_en = True
+    # Check if we have an active inverter (Fronius) or if EVCC/display-only mode is enabled
+    if inverter_interface is not None:
+        if isinstance(inverter_interface, EvccInverter):
+            inverter_evcc_en = True
+        elif isinstance(inverter_interface, NullInverter):
+            inverter_evcc_en = True
+        else:
+            # Real inverter (Fronius, Victron, etc.)
+            inverter_fronius_en = True
 
     current_overall_state = base_control.get_current_overall_state_number()
     current_overall_state_text = base_control.get_current_overall_state()
@@ -1267,8 +1266,10 @@ def change_control_state():
         config_manager.config["inverter"]["max_pv_charge_rate"],
     )
 
+    # Update current battery max to actual capability (after SOC/temp derating)
+    # This allows get_needed_ac_charge_power() to properly cap calculated demand
     base_control.set_current_bat_charge_max(
-        max(tgt_ac_charge_power, tgt_dc_charge_power)
+        round(battery_interface.get_max_charge_power())
     )
 
     # Check if the overall state of the inverter was changed recently and consume the event
@@ -1522,6 +1523,9 @@ def get_controls():
     current_inverter_mode = base_control.get_current_overall_state()
     current_inverter_mode_num = base_control.get_current_overall_state_number()
 
+    # Get current actual power (logging handled in get_needed_ac_charge_power with change tracking)
+    actual_power = base_control.get_needed_ac_charge_power()
+
     currency = price_interface.get_price_currency()
     currency_symbol = CURRENCY_SYMBOL_MAP.get(currency, currency)
     currency_minor_unit = CURRENCY_MINOR_UNIT_MAP.get(currency, f"{currency}")
@@ -1529,12 +1533,22 @@ def get_controls():
     response_data = {
         "current_states": {
             "current_ac_charge_demand": current_ac_charge_demand,
+            "current_ac_charge_power": actual_power,  # Power in W, not energy
             "current_dc_charge_demand": current_dc_charge_demand,
             "current_discharge_allowed": current_discharge_allowed,
             "inverter_mode": current_inverter_mode,
             "inverter_mode_num": current_inverter_mode_num,
             "override_active": base_control.get_override_active_and_endtime()[0],
             "override_end_time": base_control.get_override_active_and_endtime()[1],
+            "dyn_override_discharge_allowed_enabled": config_manager.config.get(
+                "eos", {}
+            ).get("dyn_override_discharge_allowed_pv_greater_load", False),
+            "dyn_override_discharge_allowed_active": eos_interface.get_last_control_data()[
+                0
+            ].get(
+                "dyn_override_active", False
+            ),
+            "dyn_override_discharge_allowed_array": optimization_scheduler.get_last_dyn_override_array(),
         },
         "evcc": {
             "charging_state": base_control.get_current_evcc_charging_state(),
@@ -1561,8 +1575,8 @@ def get_controls():
         "inverter": {
             "inverter_special_data": (
                 inverter_interface.get_inverter_current_data()
-                if inverter_type in ["fronius_gen24", "fronius_gen24_legacy"]
-                and inverter_interface is not None
+                if inverter_interface is not None
+                and inverter_interface.supports_extended_monitoring
                 else None
             )
         },
@@ -2020,11 +2034,9 @@ if __name__ == "__main__":
             http_server.stop()
             logger.info("[Main] HTTP server stopped")
 
-        # restore the old config
-        if (
-            config_manager.config["inverter"]["type"]
-            in ["fronius_gen24", "fronius_gen24_v2"]
-            and inverter_interface is not None
+        # Shutdown real inverter if it exists (not NullInverter/display-only or EvccInverter)
+        if inverter_interface is not None and not isinstance(
+            inverter_interface, (NullInverter, EvccInverter)
         ):
             inverter_interface.shutdown()
         pv_interface.shutdown()
