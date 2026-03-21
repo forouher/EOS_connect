@@ -1,0 +1,594 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Developer Guide - EOS Connect Documentation</title>
+    <link rel="stylesheet" href="../assets/css/style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.2/css/all.min.css">
+</head>
+<body>
+    <!-- DRAFT BANNER - REMOVE WHEN FINALIZED -->
+    <div class="draft-banner">
+        <i class="fas fa-exclamation-triangle"></i> DRAFT DOCUMENTATION - UNDER REVIEW <i class="fas fa-exclamation-triangle"></i>
+    </div>
+    <!-- END DRAFT BANNER -->
+
+    <nav class="nav-header">
+        <div class="nav-container">
+            <a href="../index.html" class="nav-logo">
+                <img src="../assets/images/icon.png" alt="EOS Connect" style="height: 48px; vertical-align: middle; margin-right: 8px;">
+                <span>EOS Connect</span>
+                <span class="version-badge">v0.2.31</span>
+            </a>
+            <button class="mobile-menu-toggle" onclick="toggleMobileMenu()" aria-label="Toggle menu">
+                <i class="fas fa-bars"></i>
+            </button>
+            <ul class="nav-menu">
+                <li><a href="../index.html">Home</a></li>
+                <li><a href="../what-is/index.html">What Is</a></li>
+                <li><a href="../user-guide/index.html">User Guide</a></li>
+                <li><a href="../user-guide/configuration.html">Configuration</a></li>
+                <li><a href="../advanced/index.html">Advanced</a></li>
+                <li><a href="index.html" class="active">Developer</a></li>
+                <li><a href="https://github.com/ohAnd/EOS_connect" target="_blank"><i class="fab fa-github"></i> GitHub</a></li>
+                <li><a href="https://github.com/sponsors/ohAnd" target="_blank" title="Sponsor the project"><i class="fas fa-mug-hot"></i></a></li>
+            </ul>
+        </div>
+    </nav>
+
+    <div class="container">
+        <div class="page-wrapper">
+            <aside class="toc-sidebar">
+                <h3>On This Page</h3>
+                <nav class="toc-nav">
+                    <a href="#architecture" class="toc-link">Architecture</a>
+                    <a href="#contributing" class="toc-link">Contributing</a>
+                    <a href="#testing" class="toc-link">Testing</a>
+                    <a href="#dev-setup" class="toc-link">Dev Setup</a>
+                </nav>
+            </aside>
+
+            <main class="main-content">
+        <div class="hero">
+            <h1>Developer Guide</h1>
+            <p>Architecture, contributing guidelines, and development setup</p>
+        </div>
+
+        <!-- Quick Links -->
+        <div class="main-blocks">
+            <div class="block-card">
+                <div class="card-header">
+                    <div class="icon"><i class="fas fa-sitemap"></i></div>
+                    <h3>Architecture</h3>
+                </div>
+                <p>System design and component overview</p>
+                <a href="#architecture" class="btn">Learn →</a>
+            </div>
+            <div class="block-card">
+                <div class="card-header">
+                    <div class="icon"><i class="fas fa-code-branch"></i></div>
+                    <h3>Contributing</h3>
+                </div>
+                <p>How to contribute to EOS Connect</p>
+                <a href="#contributing" class="btn">Contribute →</a>
+            </div>
+            <div class="block-card">
+                <div class="card-header">
+                    <div class="icon"><i class="fas fa-vial"></i></div>
+                    <h3>Testing</h3>
+                </div>
+                <p>Running and writing tests</p>
+                <a href="#testing" class="btn">Test →</a>
+            </div>
+            <div class="block-card">
+                <div class="card-header">
+                    <div class="icon"><i class="fas fa-wrench"></i></div>
+                    <h3>Dev Setup</h3>
+                </div>
+                <p>Setting up development environment</p>
+                <a href="#dev-setup" class="btn">Setup →</a>
+            </div>
+        </div>
+
+        <!-- Architecture -->
+        <div class="content-section" id="architecture">
+            <h2><i class="fas fa-building"></i> Architecture Overview</h2>
+
+            <h3>System Components</h3>
+            <div class="feature-grid">
+                <div class="feature-item">
+                    <h4>eos_connect.py</h4>
+                    <p>Main application entry point and orchestration</p>
+                </div>
+                <div class="feature-item">
+                    <h4>config.py</h4>
+                    <p>Configuration loading and validation</p>
+                </div>
+                <div class="feature-item">
+                    <h4>interfaces/</h4>
+                    <p>Data source and control interfaces</p>
+                </div>
+                <div class="feature-item">
+                    <h4>web/</h4>
+                    <p>Web dashboard (HTML/CSS/JS)</p>
+                </div>
+            </div>
+
+            <h3>Core Interfaces</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Interface</th>
+                        <th>Purpose</th>
+                        <th>File</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Base Control</td>
+                        <td>Core control state management</td>
+                        <td>base_control.py</td>
+                    </tr>
+                    <tr>
+                        <td>Battery Interface</td>
+                        <td>Battery data retrieval and management</td>
+                        <td>battery_interface.py</td>
+                    </tr>
+                    <tr>
+                        <td>PV Interface</td>
+                        <td>Solar forecast retrieval</td>
+                        <td>pv_interface.py</td>
+                    </tr>
+                    <tr>
+                        <td>Price Interface</td>
+                        <td>Electricity price forecasts</td>
+                        <td>price_interface.py</td>
+                    </tr>
+                    <tr>
+                        <td>Load Interface</td>
+                        <td>Household load data</td>
+                        <td>load_interface.py</td>
+                    </tr>
+                    <tr>
+                        <td>Inverter (Fronius)</td>
+                        <td>Inverter control and monitoring</td>
+                        <td>inverter_fronius_v2.py</td>
+                    </tr>
+                    <tr>
+                        <td>EVCC Interface</td>
+                        <td>EV charging control</td>
+                        <td>evcc_interface.py</td>
+                    </tr>
+                    <tr>
+                        <td>MQTT Interface</td>
+                        <td>MQTT publishing and subscription</td>
+                        <td>mqtt_interface.py</td>
+                    </tr>
+                    <tr>
+                        <td>Optimization Interface</td>
+                        <td>EOS/EVopt communication</td>
+                        <td>optimization_interface.py</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h3>Data Flow</h3>
+            <pre><code>1. Main Loop (every refresh_time minutes)
+   ├─ Fetch battery SOC (battery_interface)
+   ├─ Fetch PV forecast (pv_interface)
+   ├─ Fetch price forecast (price_interface)
+   ├─ Fetch load data (load_interface)
+   ├─ Build optimization request
+   ├─ Send to EOS/EVopt (optimization_interface)
+   ├─ Process optimization response
+   ├─ Update controls (base_control)
+   ├─ Execute inverter commands (inverter_interface)
+   ├─ Update EVCC (evcc_interface)
+   ├─ Publish to MQTT (mqtt_interface)
+   └─ Serve via web API</code></pre>
+        </div>
+
+        <!-- Contributing -->
+        <div class="content-section" id="contributing">
+            <h2><i class="fas fa-handshake"></i> Contributing</h2>
+
+            <h3>Branch Strategy</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Branch Type</th>
+                        <th>Purpose</th>
+                        <th>Naming</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong>main</strong></td>
+                        <td>Stable, tagged releases only</td>
+                        <td>-</td>
+                    </tr>
+                    <tr>
+                        <td><strong>develop</strong></td>
+                        <td>Integration branch (PR target)</td>
+                        <td>-</td>
+                    </tr>
+                    <tr>
+                        <td>feature</td>
+                        <td>New functionality</td>
+                        <td>feature/&lt;desc&gt; or feature/&lt;issue&gt;-&lt;desc&gt;</td>
+                    </tr>
+                    <tr>
+                        <td>bugfix</td>
+                        <td>Fix for develop</td>
+                        <td>bugfix/&lt;issue&gt;-&lt;desc&gt;</td>
+                    </tr>
+                    <tr>
+                        <td>hotfix</td>
+                        <td>Urgent production fix</td>
+                        <td>hotfix/&lt;issue&gt;-&lt;desc&gt;</td>
+                    </tr>
+                    <tr>
+                        <td>issue</td>
+                        <td>GitHub auto-created</td>
+                        <td>issue-&lt;number&gt;-&lt;desc&gt;</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h3>Contribution Workflow</h3>
+            <pre><code># 1. Update local
+git fetch origin
+git switch develop
+git pull --ff-only
+
+# 2. Create feature branch
+git switch -c feature/better-forecast
+
+# 3. Code + test + document
+# - Write code
+# - Add/update tests
+# - Update docs (README / CONFIG_README / MQTT if behavior changes)
+
+# 4. Format and lint
+black .
+pylint src/
+
+# 5. Run tests
+pytest tests/
+
+# 6. Rebase before PR
+git fetch origin
+git rebase origin/develop
+
+# 7. Push
+git push -u origin feature/better-forecast
+
+# 8. Create PR targeting develop
+# - Link relevant issues (Closes #123)
+# - Provide clear description</code></pre>
+
+            <h3>Code Quality Requirements</h3>
+            <ul>
+                <li><strong>Formatting:</strong> Use <a href="https://black.readthedocs.io/" target="_blank">Black</a> for all Python files</li>
+                <li><strong>Linting:</strong> <a href="https://pylint.pycqa.org/" target="_blank">Pylint</a> score ≥9.0</li>
+                <li><strong>Testing:</strong> Add/update tests for logic changes</li>
+                <li><strong>Documentation:</strong> Update relevant docs</li>
+            </ul>
+
+            <h3>Commit Message Format (Conventional Commits)</h3>
+            <pre><code>feat: add battery forecast smoothing
+fix: correct negative PV handling
+docs: update MQTT topic table
+test: add tests for price calculation
+refactor: simplify config loading
+chore: update dependencies</code></pre>
+
+            <div class="alert alert-info">
+                <strong><i class="fas fa-lightbulb"></i> VS Code Tip:</strong> Install the <a href="https://github.com/microsoft/vscode-black-formatter" target="_blank">Black Formatter extension</a> for automatic formatting on save.
+            </div>
+        </div>
+
+        <!-- Testing -->
+        <div class="content-section" id="testing">
+            <h2><i class="fas fa-flask"></i> Testing</h2>
+
+            <h3>Test Structure</h3>
+            <p>Tests are organized to mirror the source structure:</p>
+            <pre><code>tests/
+├── test_control_states.py
+└── interfaces/
+    ├── test_base_control.py
+    ├── test_battery_interface.py
+    ├── test_inverter_fronius_v2.py
+    ├── test_load_interface.py
+    ├── test_optimization_interface.py
+    ├── test_price_interface.py
+    ├── test_pv_interface.py
+    └── optimization_backends/
+        └── test_optimization_backend_eos.py</code></pre>
+
+            <h3>Running Tests</h3>
+            <pre><code># Run all tests
+pytest tests/
+
+# Run specific test file
+pytest tests/interfaces/test_battery_interface.py
+
+# Run with coverage
+pytest --cov=src tests/
+
+# Run with verbose output
+pytest -v tests/</code></pre>
+
+            <h3>Writing Tests</h3>
+            <h4>Test File Naming</h4>
+            <ul>
+                <li>Place in <code>tests/</code> directory</li>
+                <li>Mirror source structure</li>
+                <li>Name as <code>test_&lt;module&gt;.py</code></li>
+            </ul>
+
+            <h4>Example Test</h4>
+            <pre><code>import pytest
+from src.interfaces.battery_interface import BatteryInterface
+
+def test_battery_soc_calculation():
+    """Test SOC calculation with known values"""
+    battery = BatteryInterface(capacity_wh=10000)
+    battery.set_soc(0.75)
+    
+    assert battery.get_remaining_wh() == 7500
+    assert battery.get_soc() == 0.75
+
+def test_battery_temperature_protection():
+    """Test temperature-based power reduction"""
+    battery = BatteryInterface(
+        capacity_wh=10000,
+        max_charge_power_w=5000,
+        temperature_sensor="sensor.temp"
+    )
+    
+    # Cold temperature should reduce power
+    power = battery.calculate_max_charge_power(
+        soc=0.50, 
+        temperature=-5
+    )
+    assert power < 500  # Should be ~5-7.5% of max</code></pre>
+
+            <h3>Test Configuration</h3>
+            <p>Configure pytest in <code>pytest.ini</code>:</p>
+            <pre><code>[pytest]
+testpaths = tests
+python_files = test_*.py
+python_classes = Test*
+python_functions = test_*</code></pre>
+        </div>
+
+        <!-- Development Setup -->
+        <div class="content-section" id="dev-setup">
+            <h2><i class="fas fa-wrench"></i> Development Setup</h2>
+
+            <h3>Prerequisites</h3>
+            <ul>
+                <li>Python 3.11 or higher</li>
+                <li>Git</li>
+                <li>pip</li>
+                <li>(Optional) VS Code with Python extension</li>
+            </ul>
+
+            <h3>Setup Steps</h3>
+            <pre><code># 1. Clone repository
+git clone https://github.com/ohAnd/EOS_connect.git
+cd EOS_connect
+
+# 2. Create virtual environment
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# 3. Install dependencies
+pip install -r requirements.txt
+
+# 4. Install development dependencies
+pip install black pylint pytest pytest-cov
+
+# 5. Copy and edit config
+cp src/config.yaml.example src/config.yaml
+# Edit src/config.yaml with your settings
+
+# 6. Run EOS Connect
+python src/eos_connect.py</code></pre>
+
+            <h3>VS Code Configuration</h3>
+            <p>Recommended <code>.vscode/settings.json</code>:</p>
+            <pre><code>{
+  "python.defaultInterpreterPath": "./venv/bin/python",
+  "python.linting.enabled": true,
+  "python.linting.pylintEnabled": true,
+  "python.linting.pylintArgs": ["--rcfile=.pylintrc"],
+  "python.formatting.provider": "black",
+  "[python]": {
+    "editor.formatOnSave": true,
+    "editor.codeActionsOnSave": {
+      "source.organizeImports": true
+    }
+  },
+  "python.testing.pytestEnabled": true,
+  "python.testing.pytestArgs": ["tests"]
+}</code></pre>
+
+            <h3>Environment Variables</h3>
+            <p>For development, you can override config with environment variables:</p>
+            <pre><code># Linux/Mac
+export EOS_CONNECT_LOG_LEVEL=debug
+export EOS_CONNECT_PORT=8081
+
+# Windows
+set EOS_CONNECT_LOG_LEVEL=debug
+set EOS_CONNECT_PORT=8081</code></pre>
+        </div>
+
+        <!-- Project Structure -->
+        <div class="content-section">
+            <h2><i class="fas fa-folder"></i> Project Structure</h2>
+            <pre><code>EOS_connect/
+├── src/
+│   ├── eos_connect.py         # Main application
+│   ├── config.py              # Configuration management
+│   ├── config.yaml            # User configuration
+│   ├── constants.py           # Constants and enums
+│   ├── log_handler.py         # Logging setup
+│   ├── version.py             # Version information
+│   ├── interfaces/            # Data interfaces
+│   │   ├── base_control.py
+│   │   ├── battery_interface.py
+│   │   ├── evcc_interface.py
+│   │   ├── inverter_fronius_v2.py
+│   │   ├── load_interface.py
+│   │   ├── mqtt_interface.py
+│   │   ├── optimization_interface.py
+│   │   ├── price_interface.py
+│   │   └── pv_interface.py
+│   ├── web/                   # Web dashboard
+│   │   ├── index.html
+│   │   ├── css/
+│   │   └── js/
+│   └── json/                  # JSON schemas and examples
+├── tests/                     # Test suite
+├── docs/                      # Documentation (GitHub Pages)
+├── docker-compose.yml         # Docker deployment
+├── Dockerfile                 # Docker image
+├── requirements.txt           # Python dependencies
+├── pytest.ini                 # Pytest configuration
+├── README.md                  # Project overview
+├── CONTRIBUTING.md            # Contribution guidelines
+└── LICENSE                    # MIT License</code></pre>
+        </div>
+
+        <!-- Resources -->
+        <div class="content-section">
+            <h2><i class="fas fa-book-open"></i> Resources</h2>
+
+            <h3>Documentation</h3>
+            <ul>
+                <li><a href="https://github.com/ohAnd/EOS_connect" target="_blank">GitHub Repository</a></li>
+                <li><a href="https://github.com/ohAnd/EOS_connect/blob/main/README.md" target="_blank">README</a></li>
+                <li><a href="../user-guide/configuration.html" target="_blank">Configuration Reference</a></li>
+                <li><a href="https://github.com/ohAnd/EOS_connect/blob/main/CONTRIBUTING.md" target="_blank">Contributing Guidelines</a></li>
+            </ul>
+
+            <h3>Related Projects</h3>
+            <ul>
+                <li><a href="https://github.com/Akkudoktor-EOS/EOS" target="_blank">Akkudoktor EOS</a> - Main optimization backend</li>
+                <li><a href="https://github.com/evcc-io/evcc" target="_blank">EVCC</a> - EV charging controller</li>
+                <li><a href="https://www.home-assistant.io/" target="_blank">Home Assistant</a> - Smart home platform</li>
+            </ul>
+
+            <h3>Tools</h3>
+            <ul>
+                <li><a href="https://black.readthedocs.io/" target="_blank">Black</a> - Code formatter</li>
+                <li><a href="https://pylint.pycqa.org/" target="_blank">Pylint</a> - Code analyzer</li>
+                <li><a href="https://docs.pytest.org/" target="_blank">Pytest</a> - Testing framework</li>
+            </ul>
+        </div>
+
+        <!-- Get Involved -->
+        <div class="content-section">
+            <h2><i class="fas fa-trophy"></i> Get Involved!</h2>
+            <p>We welcome contributions of all kinds:</p>
+
+            <div class="feature-grid">
+                <div class="feature-item">
+                    <h4><i class="fas fa-bug"></i> Report Bugs</h4>
+                    <p><a href="https://github.com/ohAnd/EOS_connect/issues" target="_blank">Open an issue</a> with detailed reproduction steps</p>
+                </div>
+                <div class="feature-item">
+                    <h4><i class="fas fa-lightbulb"></i> Suggest Features</h4>
+                    <p>Share your ideas in <a href="https://github.com/ohAnd/EOS_connect/discussions" target="_blank">GitHub Discussions</a></p>
+                </div>
+                <div class="feature-item">
+                    <h4><i class="fas fa-edit"></i> Improve Docs</h4>
+                    <p>Documentation PRs are always welcome!</p>
+                </div>
+                <div class="feature-item">
+                    <h4><i class="fas fa-wrench"></i> Submit PRs</h4>
+                    <p>Follow the contribution workflow and submit your changes</p>
+                </div>
+            </div>
+        </div>
+            </main>
+        </div>
+    </div>
+
+    <footer class="footer">
+        <p>EOS Connect Documentation | <a href="../index.html">Home</a> | <a href="https://github.com/ohAnd/EOS_connect">GitHub</a> | <a href="https://github.com/sponsors/ohAnd">Sponsor</a></p>
+    </footer>
+
+    <!-- Scroll spy for TOC -->
+    <script>
+        const sections = document.querySelectorAll('.content-section[id]');
+        const tocLinks = document.querySelectorAll('.toc-link');
+
+        function highlightTOC() {
+            let current = '';
+            sections.forEach(section => {
+                const sectionTop = section.offsetTop;
+                if (pageYOffset >= sectionTop - 100) {
+                    current = section.getAttribute('id');
+                }
+            });
+
+            tocLinks.forEach(link => {
+                link.classList.remove('active');
+                if (link.getAttribute('href') === '#' + current) {
+                    link.classList.add('active');
+                }
+            });
+        }
+
+        window.addEventListener('scroll', highlightTOC);
+        highlightTOC();
+    </script>
+
+    <!-- Back to Top Button -->
+    <button class="back-to-top" onclick="scrollToTop()" aria-label="Back to top">
+        <i class="fas fa-chevron-up"></i>
+    </button>
+
+    <script>
+function toggleMobileMenu() {
+    const menu = document.querySelector('.nav-menu');
+    menu.classList.toggle('mobile-active');
+}
+
+// Close mobile menu when clicking outside
+document.addEventListener('click', function(event) {
+    const menu = document.querySelector('.nav-menu');
+    const toggle = document.querySelector('.mobile-menu-toggle');
+    if (menu.classList.contains('mobile-active') && !menu.contains(event.target) && !toggle.contains(event.target)) {
+        menu.classList.remove('mobile-active');
+    }
+});
+    </script>
+
+    <script>
+// Back to top button functionality
+const backToTopButton = document.querySelector('.back-to-top');
+
+window.addEventListener('scroll', function() {
+    if (window.pageYOffset > 300) {
+        backToTopButton.classList.add('visible');
+    } else {
+        backToTopButton.classList.remove('visible');
+    }
+});
+
+function scrollToTop() {
+    window.scrollTo({
+        top: 0,
+        behavior: 'smooth'
+    });
+}
+    </script>
+</body>
+</html>

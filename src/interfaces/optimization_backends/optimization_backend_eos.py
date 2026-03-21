@@ -49,13 +49,13 @@ class EOSBackend:
                 if config_optimization_upodate_needed:
                     self.__set_config_path("optimization", config_optimization)
                     logger.warning(
-                        "[EOS] Detected EOS version >= 0.1.0 - config updated with "
+                        "[OPT-EOS] Detected EOS version >= 0.1.0 - config updated with "
                         + ": %s",
                         config_optimization,
                     )
                 else:
                     logger.info(
-                        "[EOS] Detected EOS version >= 0.1.0 - config optimization values OK"
+                        "[OPT-EOS] Detected EOS version >= 0.1.0 - config optimization values OK"
                     )
 
                 config_devices = self.__get_config_path("devices/electric_vehicles")
@@ -67,7 +67,7 @@ class EOSBackend:
                     )
                     self.__set_config_path("devices/electric_vehicles", config_devices)
                     logger.warning(
-                        "[EOS] Detected EOS version >= 0.1.0 - config updated with charge "
+                        "[OPT-EOS] Detected EOS version >= 0.1.0 - config updated with charge "
                         + "rates for electric vehicles"
                     )
                 elif "charge_rates" not in config_devices[0]:
@@ -76,18 +76,18 @@ class EOSBackend:
                     )
                     self.__set_config_path("devices/electric_vehicles", config_devices)
                     logger.warning(
-                        "[EOS] Detected EOS version >= 0.1.0 - config updated with charge "
+                        "[OPT-EOS] Detected EOS version >= 0.1.0 - config updated with charge "
                         + "rates for electric vehicles"
                     )
                 else:
                     logger.info(
-                        "[EOS] Detected EOS version >= 0.1.0 - config charge rates for "
+                        "[OPT-EOS] Detected EOS version >= 0.1.0 - config charge rates for "
                         + "electric vehicles OK"
                     )
-            logger.info("[EOS] Configuration validation successful")
+            logger.info("[OPT-EOS] Configuration validation successful")
         except ValueError as e:
-            logger.error("[EOS] EOS backend configuration error: %s", str(e))
-            logger.error("[EOS] We have to exit now ...")
+            logger.error("[OPT-EOS] EOS backend configuration error: %s", str(e))
+            logger.error("[OPT-EOS] We have to exit now ...")
             sys.exit(1)  # Exit if configuration is invalid
 
     def optimize(self, eos_request, timeout=180):
@@ -103,7 +103,7 @@ class EOSBackend:
             + str(datetime.now(self.time_zone).hour)
         )
         logger.info(
-            "[EOS] OPTIMIZE request optimization with: %s - and with timeout: %s",
+            "[OPT-EOS] OPTIMIZE request optimization with: %s - and with timeout: %s",
             request_url,
             timeout,
         )
@@ -117,7 +117,7 @@ class EOSBackend:
             elapsed_time = end_time - start_time
             minutes, seconds = divmod(elapsed_time, 60)
             logger.info(
-                "[EOS] OPTIMIZE response retrieved successfully in %d min %.2f sec for current run",
+                "[OPT-EOS] OPTIMIZE response retrieved successfully in %d min %.2f sec for current run",
                 int(minutes),
                 seconds,
             )
@@ -135,11 +135,13 @@ class EOSBackend:
             avg_runtime = sum(self.last_optimization_runtimes) / 5
             return response.json(), avg_runtime
         except requests.exceptions.Timeout:
-            logger.error("[EOS] OPTIMIZE Request timed out after %s seconds", timeout)
+            logger.error(
+                "[OPT-EOS] OPTIMIZE Request timed out after %s seconds", timeout
+            )
             return {"error": "Request timed out - trying again with next run"}, None
         except requests.exceptions.ConnectionError as e:
             logger.error(
-                "[EOS] OPTIMIZE Connection error - EOS server not reachable at %s "
+                "[OPT-EOS] OPTIMIZE Connection error - EOS server not reachable at %s "
                 "will try again with next cycle - error: %s",
                 request_url,
                 str(e),
@@ -149,15 +151,17 @@ class EOSBackend:
                 "will try again with next cycle"
             }, None
         except requests.exceptions.RequestException as e:
-            logger.error("[EOS] OPTIMIZE Request failed: %s", e)
+            logger.error("[OPT-EOS] OPTIMIZE Request failed: %s", e)
             if response is not None:
-                logger.error("[EOS] OPTIMIZE Response status: %s", response.status_code)
+                logger.error(
+                    "[OPT-EOS] OPTIMIZE Response status: %s", response.status_code
+                )
                 logger.debug(
-                    "[EOS] OPTIMIZE ERROR - response of EOS is:\n%s",
+                    "[OPT-EOS] OPTIMIZE ERROR - response of EOS is:\n%s",
                     response.text,
                 )
             logger.debug(
-                "[EOS] OPTIMIZE ERROR - payload for the request was:\n%s",
+                "[OPT-EOS] OPTIMIZE ERROR - payload for the request was:\n%s",
                 eos_request,
             )
             return {"error": str(e)}, None
@@ -204,7 +208,9 @@ class EOSBackend:
             )
             response.raise_for_status()
         except requests.exceptions.RequestException as e:
-            logger.error("[EOS] Failed to set config value for path '%s': %s", path, e)
+            logger.error(
+                "[OPT-EOS] Failed to set config value for path '%s': %s", path, e
+            )
 
     def send_measurement_to_eos(self, dataframe):
         """
@@ -224,10 +230,10 @@ class EOSBackend:
         )
         response.raise_for_status()
         if response.status_code == 200:
-            logger.debug("[EOS] Measurement data sent to EOS server successfully.")
+            logger.debug("[OPT-EOS] Measurement data sent to EOS server successfully.")
         else:
             logger.debug(
-                "[EOS] Failed to send data to EOS server. Status code: %s, Response: %s",
+                "[OPT-EOS] Failed to send data to EOS server. Status code: %s, Response: %s",
                 response.status_code,
                 response.text,
             )
@@ -238,7 +244,7 @@ class EOSBackend:
         """
         response = requests.put(self.base_url + "/v1/config/file", timeout=10)
         response.raise_for_status()
-        logger.debug("[EOS] CONFIG saved to config file successfully.")
+        logger.debug("[OPT-EOS] CONFIG saved to config file successfully.")
 
     def update_config_from_config_file(self):
         """
@@ -247,14 +253,14 @@ class EOSBackend:
         try:
             response = requests.post(self.base_url + "/v1/config/update", timeout=10)
             response.raise_for_status()
-            logger.info("[EOS] CONFIG updated from config file successfully.")
+            logger.info("[OPT-EOS] CONFIG updated from config file successfully.")
         except requests.exceptions.Timeout:
             logger.error(
-                "[EOS] CONFIG Request timed out while updating config from config file."
+                "[OPT-EOS] CONFIG Request timed out while updating config from config file."
             )
         except requests.exceptions.RequestException as e:
             logger.error(
-                "[EOS] CONFIG Request failed while updating config from config file: %s",
+                "[OPT-EOS] CONFIG Request failed while updating config from config file: %s",
                 e,
             )
 
@@ -275,16 +281,16 @@ class EOSBackend:
                 # raise ValueError(
                 #     f"EOS version {eos_version_real} currently not supported!"
                 # )
-            logger.info("[EOS] Getting EOS version: %s", eos_version)
+            logger.info("[OPT-EOS] Getting EOS version: %s", eos_version)
             return eos_version
         except requests.exceptions.HTTPError as e:
             if hasattr(e, "response") and e.response and e.response.status_code == 404:
                 eos_version = "0.0.1"
-                logger.info("[EOS] Getting EOS version: %s", eos_version)
+                logger.info("[OPT-EOS] Getting EOS version: %s", eos_version)
                 return eos_version
             else:
                 logger.error(
-                    "[EOS] HTTP error occurred while getting EOS version - use preset version:"
+                    "[OPT-EOS] HTTP error occurred while getting EOS version - use preset version:"
                     + " %s : %s - Response: %s",
                     self.eos_version,
                     e,
@@ -297,7 +303,7 @@ class EOSBackend:
                 return self.eos_version
         except requests.exceptions.ConnectTimeout:
             logger.error(
-                "[EOS] Failed to get EOS version  - use preset version: '%s' - Server not "
+                "[OPT-EOS] Failed to get EOS version  - use preset version: '%s' - Server not "
                 + "reachable: Connection to %s timed out",
                 self.eos_version,
                 self.base_url,
@@ -305,21 +311,21 @@ class EOSBackend:
             return self.eos_version
         except requests.exceptions.ConnectionError as e:
             logger.error(
-                "[EOS] Failed to get EOS version - use preset version: '%s' - Connection error: %s",
+                "[OPT-EOS] Failed to get EOS version - use preset version: '%s' - Connection error: %s",
                 self.eos_version,
                 e,
             )
             return self.eos_version
         except requests.exceptions.RequestException as e:
             logger.error(
-                "[EOS] Failed to get EOS version - use preset version: '%s' - Error: %s ",
+                "[OPT-EOS] Failed to get EOS version - use preset version: '%s' - Error: %s ",
                 self.eos_version,
                 e,
             )
             return self.eos_version
         except json.JSONDecodeError as e:
             logger.error(
-                "[EOS] Failed to decode EOS version - use preset version: '%s' - response: %s ",
+                "[OPT-EOS] Failed to decode EOS version - use preset version: '%s' - response: %s ",
                 self.eos_version,
                 e,
             )
@@ -343,7 +349,7 @@ class EOSBackend:
             return version.parse(self.eos_version) >= version.parse(version_string)
         except ImportError:
             logger.warning(
-                "[EOS] 'packaging' module not found. Cannot compare EOS versions."
+                "[OPT-EOS] 'packaging' module not found. Cannot compare EOS versions."
             )
             return False
 

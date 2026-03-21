@@ -1,0 +1,646 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>What is EOS Connect? - Documentation</title>
+    <link rel="stylesheet" href="../assets/css/style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.2/css/all.min.css">
+</head>
+<body>
+    <!-- DRAFT BANNER - REMOVE WHEN FINALIZED -->
+    <div class="draft-banner">
+        <i class="fas fa-exclamation-triangle"></i> DRAFT DOCUMENTATION - UNDER REVIEW <i class="fas fa-exclamation-triangle"></i>
+    </div>
+    <!-- END DRAFT BANNER -->
+
+    <!-- Navigation -->
+    <nav class="nav-header">
+        <div class="nav-container">
+            <a href="../index.html" class="nav-logo">
+                <img src="../assets/images/icon.png" alt="EOS Connect" style="height: 48px; vertical-align: middle; margin-right: 8px;">
+                <span>EOS Connect</span>
+                <span class="version-badge">v0.2.31</span>
+            </a>
+            <button class="mobile-menu-toggle" onclick="toggleMobileMenu()" aria-label="Toggle menu">
+                <i class="fas fa-bars"></i>
+            </button>
+            <ul class="nav-menu">
+                <li><a href="../index.html">Home</a></li>
+                <li><a href="index.html" class="active">What Is</a></li>
+                <li><a href="../user-guide/index.html">User Guide</a></li>
+                <li><a href="../user-guide/configuration.html">Configuration</a></li>
+                <li><a href="../advanced/index.html">Advanced</a></li>
+                <li><a href="../developer/index.html">Developer</a></li>
+                <li><a href="https://github.com/ohAnd/EOS_connect" target="_blank"><i class="fab fa-github"></i> GitHub</a></li>
+                <li><a href="https://github.com/sponsors/ohAnd" target="_blank" title="Sponsor the project"><i class="fas fa-mug-hot"></i></a></li>
+            </ul>
+        </div>
+    </nav>
+
+    <div class="container">
+        <!-- Page wrapper with sidebar -->
+        <div class="page-wrapper">
+            <!-- Table of Contents Sidebar -->
+            <aside class="toc-sidebar">
+                <h3>On This Page</h3>
+                <nav class="toc-nav">
+                    <a href="#introduction" class="toc-link">Introduction</a>
+                    <a href="#how-it-works" class="toc-link">How It Works</a>
+                    <a href="#features" class="toc-link">Core Features</a>
+                    <a href="#forecasting" class="toc-link">Solar Forecasting</a>
+                    <a href="#cost" class="toc-link">Cost Optimization</a>
+                    <a href="#integrations" class="toc-link">Integrations</a>
+                    <a href="#updates" class="toc-link">Update Notifications</a>
+                    <a href="#benefits" class="toc-link">Benefits</a>                    <a href="#web-dashboard" class="toc-link">Web Dashboard</a>                    <a href="#next-steps" class="toc-link">Next Steps</a>
+                </nav>
+            </aside>
+
+            <!-- Main content -->
+            <main class="main-content">
+        <!-- Header -->
+        <div class="hero">
+            <h1>What is EOS Connect?</h1>
+            <p>Integration and control platform that connects your energy hardware with optimization engines</p>
+        </div>
+
+        <!-- Introduction -->
+        <div class="content-section" id="introduction">
+            <h2><i class="fas fa-book"></i> Introduction</h2>
+            <p><strong>EOS Connect</strong> is an open-source <strong>integration and control platform</strong> for intelligent energy management. It acts as the orchestration layer between your energy system (solar panels, battery storage, inverters, EV chargers) and external optimization backends.</p>
+            
+            <div class="alert alert-warning">
+                <strong><i class="fas fa-exclamation-triangle"></i> Important Understanding:</strong> EOS Connect <strong>does not perform optimization calculations itself</strong>. Instead, it:
+                <ul style="margin-top: 0.5rem;">
+                    <li><i class="fas fa-check"></i> Collects data from your devices (battery SOC, PV production, load consumption)</li>
+                    <li><i class="fas fa-check"></i> Retrieves forecasts (PV generation, electricity prices, weather)</li>
+                    <li><i class="fas fa-check"></i> Sends all data to an external optimization engine (EOS or EVopt)</li>
+                    <li><i class="fas fa-check"></i> Receives optimization results back</li>
+                    <li><i class="fas fa-check"></i> Controls your devices based on those results (inverter, battery, EV charger)</li>
+                    <li><i class="fas fa-check"></i> Provides monitoring and manual control via web dashboard and APIs</li>
+                </ul>
+            </div>
+
+            <p><strong>The actual optimization calculations are performed by:</strong></p>
+            <ul>
+                <li><strong>Akkudoktor EOS</strong> (default) - Full-featured optimization engine - <a href="https://github.com/Akkudoktor-EOS/EOS" target="_blank"><i class="fab fa-github"></i> GitHub</a></li>
+                <li><strong>EVopt</strong> - Lightweight, very fast alternative - <a href="https://github.com/thecem/hassio-evopt" target="_blank"><i class="fab fa-github"></i> GitHub</a></li>
+            </ul>
+
+            <div class="alert alert-info">
+                <strong><i class="fas fa-lightbulb"></i> Think of it this way:</strong> EOS Connect is like a smart home hub that translates between your devices and a powerful optimization brain running separately.
+            </div>
+        </div>
+
+        <!-- How It Works -->
+        <div class="content-section" id="how-it-works">
+            <h2><i class="fas fa-cog"></i> How It Works</h2>
+            
+            <h3>System Architecture</h3>
+            <p>EOS Connect operates in a continuous optimization cycle:</p>
+            
+            <ol>
+                <li><strong>Data Collection:</strong> Gathers current system state (battery SOC, PV production, load consumption)</li>
+                <li><strong>Forecast Integration:</strong> Retrieves PV forecasts, electricity price forecasts, and weather data</li>
+                <li><strong>Optimization Request:</strong> Sends all data to EOS/EVopt server for calculation</li>
+                <li><strong>Control Execution:</strong> Receives optimization results and controls devices (battery charging, EV charging modes)</li>
+                <li><strong>Monitoring & Publishing:</strong> Provides real-time data via web dashboard, MQTT, and REST API</li>
+            </ol>
+
+            <div style="text-align: center; margin: 2rem 0;">
+                <img src="../assets/images/eos_connect_flow.png" alt="EOS Connect Process Flow" style="max-width: 100%; height: auto; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.3);">
+                <p style="color: #888; font-size: 0.9rem; margin-top: 0.5rem;"><em>Figure: EOS Connect process flow diagram</em></p>
+            </div>
+
+            <div class="alert alert-warning">
+                <strong><i class="fas fa-clock"></i> Timing:</strong> The optimization cycle runs every <code>refresh_time</code> minutes (default: 3 minutes) with configurable time frame granularity (15 minutes or hourly).
+            </div>
+        </div>
+
+        <!-- Core Features -->
+        <div class="content-section" id="features">
+            <h2><i class="fas fa-star"></i> Core Features</h2>
+
+            <h3><i class="fas fa-battery-full"></i> Battery Management</h3>
+            <div class="feature-grid">
+                <div class="feature-item">
+                    <h4>SOC Monitoring</h4>
+                    <p>Real-time State of Charge tracking with remaining energy calculation</p>
+                </div>
+                <div class="feature-item">
+                    <h4>Charge/Discharge Control</h4>
+                    <p>Automated modes: grid charging, PV-only, discharge allowed, idle</p>
+                </div>
+                <div class="feature-item">
+                    <h4>Dynamic Charging Curve</h4>
+                    <p>SOC-based power reduction (100% → 5% as battery fills)</p>
+                </div>
+                <div class="feature-item">
+                    <h4>Temperature Protection</h4>
+                    <p>Automatic power reduction in extreme cold/heat (-30°C to +70°C)</p>
+                </div>
+                <div class="feature-item">
+                    <h4>Dynamic Price Calculation</h4>
+                    <p>Analyzes charging history to determine real cost of stored energy</p>
+                </div>
+                <div class="feature-item">
+                    <h4><i class="fas fa-wand-magic-sparkles"></i> Smart Sensor Detection</h4>
+                    <p>Automatically detects battery/grid sensor polarity to ensure correct PV vs Grid attribution</p>
+                </div>
+                <div class="feature-item">
+                    <h4>Efficiency Settings</h4>
+                    <p>Configurable charge/discharge efficiency for accurate calculations</p>
+                </div>
+            </div>
+
+            <h4><i class="fas fa-thermometer-half"></i> Temperature-Based Protection Details</h4>
+            <p>When a battery temperature sensor is configured, EOS Connect applies a generic temperature derating curve <strong>derived from BYD HVM battery thermal specifications</strong>. This manufacturer-validated approach ensures safe charging across all temperature ranges for any battery system:</p>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Temperature Range</th>
+                        <th>Charging Power</th>
+                        <th>Purpose</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>&lt; -10°C</td>
+                        <td>0% (Locked)</td>
+                        <td>Cell damage protection - no charging allowed</td>
+                    </tr>
+                    <tr>
+                        <td>-10°C to 0°C</td>
+                        <td>7.5% → 50%</td>
+                        <td>Lithium-plating protection in extreme cold</td>
+                    </tr>
+                    <tr>
+                        <td>0°C to 5°C</td>
+                        <td>50%</td>
+                        <td>Moderate cold derating</td>
+                    </tr>
+                    <tr>
+                        <td>5°C to 12°C</td>
+                        <td>50% → 77%</td>
+                        <td>Light derating - battery warming gradually</td>
+                    </tr>
+                    <tr>
+                        <td>12°C to 40°C</td>
+                        <td>100% (SOC-based only)</td>
+                        <td>Optimal operating range - full charging capacity</td>
+                    </tr>
+                    <tr>
+                        <td>40°C to 50°C</td>
+                        <td>100% → 50%</td>
+                        <td>Thermal derating - heat protection begins</td>
+                    </tr>
+                    <tr>
+                        <td>50°C to 60°C</td>
+                        <td>50% → 0%</td>
+                        <td>Severe derating - critical heat protection</td>
+                    </tr>
+                    <tr>
+                        <td>&gt; 60°C</td>
+                        <td>0% (Locked)</td>
+                        <td>Overheat protection - no charging allowed</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <div class="alert alert-success">
+                <strong><i class="fas fa-check-circle"></i> Example:</strong> At 10.5°C with 30% SOC, a 3 kWh battery charges at ~71% power (2,136 W) according to BYD HVM specifications. Temperature derating and SOC curves work together to optimize both safety and charging speed.
+            </div>
+        </div>
+
+        <!-- Solar & Forecasting -->
+        <div class="content-section" id="forecasting">
+            <h2><i class="fas fa-sun"></i> Solar Forecasting</h2>
+            <p>Multiple provider support for accurate PV generation predictions:</p>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>Provider</th>
+                        <th>Description</th>
+                        <th>Requirements</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Akkudoktor</td>
+                        <td>Default, free, comprehensive forecasts</td>
+                        <td>Location, tilt, azimuth, power</td>
+                    </tr>
+                    <tr>
+                        <td>Solcast</td>
+                        <td>High accuracy, commercial provider</td>
+                        <td>API key, resource ID (10 calls/day limit)</td>
+                    </tr>
+                    <tr>
+                        <td>OpenMeteo</td>
+                        <td>Weather-based forecasting</td>
+                        <td>Location, system specs</td>
+                    </tr>
+                    <tr>
+                        <td>Forecast.Solar</td>
+                        <td>Free solar forecasting</td>
+                        <td>Location, basic system info</td>
+                    </tr>
+                    <tr>
+                        <td>EVCC</td>
+                        <td>Use existing EVCC forecasts</td>
+                        <td>Running EVCC instance</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h4>Multi-Installation Support</h4>
+            <p>Configure multiple PV installations with different orientations:</p>
+            <ul>
+                <li>South-facing roof (180°, 25° tilt, 5 kW)</li>
+                <li>East garage (90°, 15° tilt, 2.5 kW)</li>
+                <li>West carport (270°, 10° tilt, 3 kW)</li>
+            </ul>
+            <p>EOS Connect aggregates all forecasts for total system prediction.</p>
+        </div>
+
+        <!-- Cost Optimization -->
+        <div class="content-section" id="cost">
+            <h2><i class="fas fa-dollar-sign"></i> Cost Optimization</h2>
+            
+            <h4>Dynamic Electricity Pricing</h4>
+            <p>Supports multiple price providers for real-time market rates:</p>
+            <ul>
+                <li><strong>Tibber:</strong> Scandinavian/European dynamic pricing</li>
+                <li><strong>smartenergy.at:</strong> Austrian market prices</li>
+                <li><strong>Stromligning.dk:</strong> Danish electricity pricing</li>
+                <li><strong>Fixed 24h:</strong> Custom hourly price array</li>
+                <li><strong>Default:</strong> Uses Akkudoktor pricing data</li>
+            </ul>
+
+            <h4>Price Modifiers</h4>
+            <ul>
+                <li><strong>Fixed Adder:</strong> Add fixed costs (grid fees, taxes) in ct/kWh</li>
+                <li><strong>Relative Multiplier:</strong> Apply percentage markup (e.g., 5%)</li>
+                <li><strong>Feed-in Price:</strong> Set your solar export compensation rate</li>
+                <li><strong>Negative Price Switch:</strong> Optional: don't pay when prices go negative</li>
+            </ul>
+
+            <h4>Battery Price Calculation (LIFO)</h4>
+            <p>EOS Connect can analyze your charging history to determine the <strong>real cost</strong> of energy stored in your battery:</p>
+            <ol>
+                <li>Scans last 48-96 hours of power data</li>
+                <li>Identifies charging events (battery power > threshold)</li>
+                <li>Attributes energy to either:
+                    <ul>
+                        <li>Grid charging at market price</li>
+                        <li>PV surplus at €0 (free solar energy)</li>
+                    </ul>
+                </li>
+                <li>Uses Last-In-First-Out (LIFO) valuation for current SOC</li>
+                <li>Updates optimizer with real battery energy cost</li>
+            </ol>
+
+            <div class="alert alert-info">
+                <strong><i class="fas fa-lightbulb"></i> Smart Decision:</strong> If you charged your battery from the grid at €0.30/kWh, the optimizer knows not to discharge it when prices are only €0.25/kWh.
+            </div>
+        </div>
+
+        <!-- Update Notifications -->
+        <div class="content-section" id="updates">
+            <h2><i class="fas fa-bell"></i> Update Notifications</h2>
+            <p><strong>Docker Image Users:</strong> EOS Connect automatically checks for available updates from GitHub Container Registry (GHCR).</p>
+            
+            <div class="alert alert-info">
+                <strong><i class="fas fa-info-circle"></i> Docker Only:</strong> Update notifications are <strong>only available for Docker image installations</strong>. If you're using the Home Assistant Add-on, updates are managed by Home Assistant itself through the Supervisor.
+            </div>
+
+            <h4>Update System Features</h4>
+            <ul>
+                <li><strong>Automatic Detection:</strong> Checks for updates every 12 hours in the background</li>
+                <li><strong>Branch Awareness:</strong> Detects whether you're on stable or develop branch and only shows matching updates</li>
+                <li><strong>Smart Notifications:</strong>
+                    <ul>
+                        <li>Blue dot notification on web interface menu</li>
+                        <li>Slide-down banner showing version information</li>
+                        <li>Dismissible per version (remembers your choice)</li>
+                    </ul>
+                </li>
+                <li><strong>Zero Configuration:</strong> Works automatically without any setup</li>
+                <li><strong>MQTT Integration:</strong> Publishes update status for Home Assistant automations</li>
+                <li><strong>REST API:</strong> Check update status programmatically</li>
+            </ul>
+
+            <h4>How It Works</h4>
+            <ol>
+                <li>On startup, EOS Connect detects if running as Docker image or HA Add-on</li>
+                <li>For Docker users, it queries GHCR every 12 hours for new releases</li>
+                <li>Compares latest available version with your current version</li>
+                <li>Shows notification banner and blue dot when update is available</li>
+                <li>You can dismiss the notification per version (it won't show again for that version)</li>
+                <li>Access detailed information via the Info page in the web interface</li>
+            </ol>
+
+            <div class="alert alert-success">
+                <strong><i class="fas fa-check-circle"></i> Example:</strong> Running v0.2.30 on stable branch? The system only checks for newer stable versions (0.2.31, 0.2.32, etc.), not develop versions.
+            </div>
+        </div>
+
+        <!-- Integration Capabilities -->
+        <div class="content-section" id="integrations">
+            <h2><i class="fas fa-plug"></i> Integration Capabilities</h2>
+
+            <h4>Smart Home Platforms</h4>
+            <div class="feature-grid">
+                <div class="feature-item">
+                    <h4>Home Assistant</h4>
+                    <ul>
+                        <li>MQTT Auto Discovery</li>
+                        <li>Sensor integration</li>
+                        <li>Control via entities</li>
+                        <li>Native add-on available</li>
+                    </ul>
+                </div>
+                <div class="feature-item">
+                    <h4>OpenHAB</h4>
+                    <ul>
+                        <li>Item-based integration</li>
+                        <li>MQTT publishing</li>
+                        <li>MQTT Auto Discovery (via MQTT binding)</li>
+                        <li>REST API access</li>
+                        <li>Full sensor support</li>
+                    </ul>
+                </div>
+            </div>
+
+            <h4>Inverter Control</h4>
+            <p><strong>Fronius GEN24 Support:</strong></p>
+            <ul>
+                <li><strong>Enhanced Interface (Default):</strong> Automatic firmware detection, universal compatibility</li>
+                <li><strong>Legacy Interface:</strong> Available for corner cases</li>
+                <li><strong>Supported Actions:</strong>
+                    <ul>
+                        <li>Grid charge power setting</li>
+                        <li>Discharge control</li>
+                        <li>SOC monitoring</li>
+                        <li>Real-time status</li>
+                    </ul>
+                </li>
+            </ul>
+
+            <p><strong>EVCC External Battery Control:</strong></p>
+            <ul>
+                <li>Universal interface for all EVCC-supported inverters</li>
+                <li>Battery management without direct inverter connection</li>
+                <li>Note: Dynamic max charge power not currently supported by EVCC</li>
+            </ul>
+
+            <p><strong>API-Only Mode:</strong></p>
+            <ul>
+                <li>Disable direct inverter control</li>
+                <li>Get optimization results via MQTT/REST API</li>
+                <li>Implement control in your own automation</li>
+            </ul>
+        </div>
+
+        <!-- EV Charging -->
+        <div class="content-section">
+            <h3><i class="fas fa-car"></i> Electric Vehicle Charging (EVCC)</h3>
+            
+            <h4>Modes & Control</h4>
+            <ul>
+                <li><strong>PV Mode:</strong> Charge only from solar surplus</li>
+                <li><strong>Min+PV Mode:</strong> Minimum grid + solar surplus</li>
+                <li><strong>Fast Charge:</strong> Maximum power from grid</li>
+                <li><strong>Off:</strong> No charging</li>
+            </ul>
+
+            <h4>Multi-EVCC Support</h4>
+            <p>Control multiple EVCC instances:</p>
+            <ul>
+                <li>Home wallbox (main garage)</li>
+                <li>Guest wallbox (driveway)</li>
+                <li>Workshop charger</li>
+            </ul>
+
+            <h4>Integration with Optimization</h4>
+            <p>EOS Connect coordinates battery and EV charging:</p>
+            <ul>
+                <li>Prioritizes PV surplus distribution</li>
+                <li>Avoids simultaneous grid charging</li>
+                <li>Respects battery SOC limits</li>
+                <li>Considers electricity price forecasts</li>
+            </ul>
+        </div>
+
+        <!-- Optimization Backends -->
+        <div class="content-section">
+            <h3><i class="fas fa-brain"></i> Optimization Backends</h3>
+
+            <h4>Akkudoktor EOS (Default)</h4>
+            <ul>
+                <li><strong>Full-featured:</strong> Complex optimization algorithms</li>
+                <li><strong>Comprehensive:</strong> Considers all system parameters</li>
+                <li><strong>Flexible:</strong> Highly configurable</li>
+                <li><strong>Server:</strong> Runs on port 8503</li>
+                <li><strong>GitHub:</strong> <a href="https://github.com/Akkudoktor-EOS/EOS" target="_blank">Akkudoktor-EOS/EOS</a></li>
+            </ul>
+
+            <h4>EVopt (Lightweight)</h4>
+            <ul>
+                <li><strong>Fast:</strong> Very quick optimization calculations</li>
+                <li><strong>Lightweight:</strong> Lower resource requirements</li>
+                <li><strong>Simple:</strong> Easier to set up and maintain</li>
+                <li><strong>Server:</strong> Runs on port 7050</li>
+                <li><strong>Source:</strong> Available via EVCC discussions</li>
+            </ul>
+
+            <div class="alert alert-info">
+                <strong><i class="fas fa-lightbulb"></i> Choose Your Backend:</strong> Configure via <code>eos.source</code> in config.yaml (eos_server or evopt)
+            </div>
+        </div>
+
+        <!-- Time Frame Configuration -->
+        <div class="content-section">
+            <h3>⏱️ Time Frame & Refresh Configuration</h3>
+
+            <h4>Time Frame (Optimization Granularity)</h4>
+            <p><strong>Backend-Specific Capabilities:</strong></p>
+            <ul>
+                <li><strong>EOS Server:</strong> Only supports <code>3600</code> seconds (hourly). 15-minute intervals are not available with this backend.</li>
+                <li><strong>EVopt:</strong> Supports both <code>3600</code> (hourly) and <code>900</code> (15-minute). Use 900 for more precise, dynamic optimization.</li>
+            </ul>
+            <p><strong>Misconfiguration Handling:</strong> If you mistakenly set <code>time_frame: 900</code> with EOS server, it will be automatically corrected to 3600 at startup with a warning message.</p>
+
+            <h4>Refresh Time</h4>
+            <p>How often EOS Connect sends optimization requests:</p>
+            <ul>
+                <li><strong>Default:</strong> 3 minutes</li>
+                <li><strong>Recommended Range:</strong> 1-5 minutes</li>
+                <li><strong>Considerations:</strong> More frequent updates = more API calls to EOS server</li>
+            </ul>
+
+            <div class="alert alert-warning">
+                <strong><i class="fas fa-exclamation-triangle"></i> Note:</strong> Solcast users should use longer refresh times (15+ minutes) due to API rate limits (10 calls/day). EOS Connect automatically extends intervals to 2.5 hours when Solcast is configured.
+            </div>
+        </div>
+
+        <!-- Benefits Summary -->
+        <div class="content-section" id="benefits">
+            <h2><i class="fas fa-bullseye"></i> Benefits Summary</h2>
+
+            <div class="feature-grid">
+                <div class="feature-item">
+                    <h4><i class="fas fa-money-bill"></i> Cost Savings</h4>
+                    <p>Minimize electricity bills by optimizing when to charge from grid and when to use battery</p>
+                </div>
+                <div class="feature-item">
+                    <h4><i class="fas fa-recycle"></i> Self-Sufficiency</h4>
+                    <p>Maximize PV self-consumption, reduce grid dependency</p>
+                </div>
+                <div class="feature-item">
+                    <h4><i class="fas fa-battery-full"></i> Battery Health</h4>
+                    <p>Protect your investment with intelligent charging curves and temperature protection</p>
+                </div>
+                <div class="feature-item">
+                    <h4><i class="fas fa-bolt"></i> Automation</h4>
+                    <p>Set it and forget it - automatic optimization every few minutes</p>
+                </div>
+                <div class="feature-item">
+                    <h4><i class="fas fa-chart-line"></i> Insights</h4>
+                    <p>Understand your energy system with detailed monitoring and analytics</p>
+                </div>
+                <div class="feature-item">
+                    <h4><i class="fas fa-wrench"></i> Flexibility</h4>
+                    <p>Easy integration with existing smart home systems and custom automation</p>
+                </div>
+            </div>
+        </div>
+        <!-- Web Dashboard -->
+        <div class="content-section" id="web-dashboard">
+            <h2><i class="fas fa-desktop"></i> Web Dashboard</h2>
+            <p>EOS Connect provides a comprehensive web interface for real-time monitoring and control:</p>
+            
+            <div style="text-align: center; margin: 2rem 0;">
+                <img src="../assets/images/screenshot_0_1_20.png" alt="EOS Connect Web Dashboard" style="max-width: 100%; height: auto; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.3);">
+                <p style="color: #888; font-size: 0.9rem; margin-top: 0.5rem;"><em>Figure: EOS Connect web dashboard showing real-time energy management</em></p>
+            </div>
+
+            <h3>Dashboard Features</h3>
+            <div class="feature-grid">
+                <div class="feature-item">
+                    <h4><i class="fas fa-chart-line"></i> Main Dashboard</h4>
+                    <p>Real-time overview of PV, Load, Battery, and Optimization states with dynamic charts</p>
+                </div>
+                <div class="feature-item">
+                    <h4><i class="fas fa-battery-three-quarters"></i> Battery Overview</h4>
+                    <p>Real-time battery status including charge power, temperature monitoring with thermal protection indicators, historical charging sessions, and cost analysis. Includes mobile-responsive temperature display with color-coded status indicators.</p>
+                </div>
+                <div class="feature-item">
+                    <h4><i class="fas fa-list-alt"></i> Log Viewer</h4>
+                    <p>Real-time application logs with component-based filtering</p>
+                </div>
+                <div class="feature-item">
+                    <h4><i class="fas fa-sliders-h"></i> Manual Controls</h4>
+                    <p>Override system modes and set charging parameters directly</p>
+                </div>
+            </div>
+        </div>
+        <!-- Next Steps -->
+        <div class="content-section" id="next-steps">
+            <h2><i class="fas fa-arrow-right"></i> Next Steps</h2>
+            <p>Ready to get started? Choose your path:</p>
+            
+            <div class="feature-grid">
+                <div class="feature-item">
+                    <a href="../user-guide/index.html" class="btn-primary">Installation Guide →</a>
+                    <p>Install EOS Connect on your system</p>
+                </div>
+                <div class="feature-item">
+                    <a href="../user-guide/configuration.html" class="btn-primary">Configuration →</a>
+                    <p>Learn how to configure all features</p>
+                </div>
+                <div class="feature-item">
+                    <a href="../advanced/index.html" class="btn-primary">Advanced Features →</a>
+                    <p>Explore API, MQTT, and automation</p>
+                </div>
+            </div>
+        </div>
+            </main>
+        </div>
+    </div>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <p>EOS Connect Documentation | <a href="../index.html">Home</a> | <a href="https://github.com/ohAnd/EOS_connect">GitHub</a> | <a href="https://github.com/sponsors/ohAnd">Sponsor</a></p>
+    </footer>
+
+    <!-- Scroll spy for TOC -->
+    <script>
+        // Highlight active TOC link based on scroll position
+        const sections = document.querySelectorAll('.content-section[id]');
+        const tocLinks = document.querySelectorAll('.toc-link');
+
+        function highlightTOC() {
+            let current = '';
+            sections.forEach(section => {
+                const sectionTop = section.offsetTop;
+                if (pageYOffset >= sectionTop - 100) {
+                    current = section.getAttribute('id');
+                }
+            });
+
+            tocLinks.forEach(link => {
+                link.classList.remove('active');
+                if (link.getAttribute('href') === '#' + current) {
+                    link.classList.add('active');
+                }
+            });
+        }
+
+        window.addEventListener('scroll', highlightTOC);
+        highlightTOC(); // Initial call
+    </script>
+
+    <!-- Back to Top Button -->
+    <button class="back-to-top" onclick="scrollToTop()" aria-label="Back to top">
+        <i class="fas fa-chevron-up"></i>
+    </button>
+
+    <script>
+function toggleMobileMenu() {
+    const menu = document.querySelector('.nav-menu');
+    menu.classList.toggle('mobile-active');
+}
+
+// Close mobile menu when clicking outside
+document.addEventListener('click', function(event) {
+    const menu = document.querySelector('.nav-menu');
+    const toggle = document.querySelector('.mobile-menu-toggle');
+    if (menu.classList.contains('mobile-active') && !menu.contains(event.target) && !toggle.contains(event.target)) {
+        menu.classList.remove('mobile-active');
+    }
+});
+    </script>
+
+    <script>
+// Back to top button functionality
+const backToTopButton = document.querySelector('.back-to-top');
+
+window.addEventListener('scroll', function() {
+    if (window.pageYOffset > 300) {
+        backToTopButton.classList.add('visible');
+    } else {
+        backToTopButton.classList.remove('visible');
+    }
+});
+
+function scrollToTop() {
+    window.scrollTo({
+        top: 0,
+        behavior: 'smooth'
+    });
+}
+    </script>
+</body>
+</html>

@@ -20,7 +20,7 @@ class ChartManager {
     /**
      * Update existing chart with new data
      */
-    updateChart(data_request, data_response, data_controls) {
+    updateChart(data_request, data_response, data_controls, priceInfo = null) {
         if (!this.chartInstance) {
             console.warn('[ChartManager] No chart instance to update');
             return;
@@ -134,13 +134,126 @@ class ChartManager {
         this.chartInstance.data.datasets[5].data = data_response["result"]["akku_soc_pro_stunde"];
         this.chartInstance.data.datasets[6].data = data_response["result"]["Kosten_Euro_pro_Stunde"];
         this.chartInstance.data.datasets[7].data = data_response["result"]["Einnahmen_Euro_pro_Stunde"];
-        this.chartInstance.data.datasets[8].data = data_response["result"]["Electricity_price"].map(value => value * 1000);
-        this.chartInstance.data.datasets[8].label = `Electricity Price (${localization.currency_symbol}/kWh)`;
-        this.chartInstance.options.scales.y1.title.text = `Price (${localization.currency_symbol}/kWh)`;
+        
         if (time_frame_base === 900) {
-            this.chartInstance.data.datasets[9].data = data_response["discharge_allowed"].slice(currentSlot).concat(data_response["discharge_allowed"].slice(96, 192));
+            this.chartInstance.data.datasets[8].data = data_response["discharge_allowed"].slice(currentSlot).concat(data_response["discharge_allowed"].slice(96, 192));
         } else {
-            this.chartInstance.data.datasets[9].data = data_response["discharge_allowed"].slice(currentHour).concat(data_response["discharge_allowed"].slice(24, 48));
+            this.chartInstance.data.datasets[8].data = data_response["discharge_allowed"].slice(currentHour).concat(data_response["discharge_allowed"].slice(24, 48));
+        }
+
+        // Dynamic Override (PV > Load) dataset - show when feature is active
+        let dynOverrideData = null;
+        if (data_controls["current_states"]["dyn_override_discharge_allowed_enabled"]) {
+            // Get the override array from API response
+            const overrideArray = data_controls["current_states"]["dyn_override_discharge_allowed_array"] || [];
+            const arrayLength = time_frame_base === 900 ? (48 * 4) : 48;
+            
+            if (overrideArray && overrideArray.length > 0) {
+                // Convert boolean array to numeric (1 for true, 0 for false)
+                dynOverrideData = overrideArray.map(val => val ? 1 : 0);
+                // Ensure the array has the correct length
+                while (dynOverrideData.length < arrayLength) {
+                    dynOverrideData.push(0);
+                }
+                dynOverrideData = dynOverrideData.slice(0, arrayLength);
+            } else {
+                // If no override array available, initialize with zeros
+                dynOverrideData = new Array(arrayLength).fill(0);
+            }
+        } else {
+            // If feature is disabled, show empty array
+            dynOverrideData = [];
+        }
+
+        if (time_frame_base === 900) {
+            if (dynOverrideData.length > 0) {
+                this.chartInstance.data.datasets[9].data = dynOverrideData.slice(currentSlot).concat(dynOverrideData.slice(96, 192));
+            }
+        } else {
+            if (dynOverrideData.length > 0) {
+                this.chartInstance.data.datasets[9].data = dynOverrideData.slice(currentHour).concat(dynOverrideData.slice(24, 48));
+            }
+        }
+
+        // Electricity Price - with segment styling for forecast data
+        const priceRawData = data_response["result"]["Electricity_price"];
+        const priceData = priceRawData.map(value => value * 1000);
+        
+        // Apply segment styling if forecast data is available
+        if (priceInfo && priceInfo.forecast_start_index !== null && priceInfo.forecast_type !== "all_real") {
+            // Calculate current slot offset based on time frame
+            // forecast_start_index is absolute from midnight, so we need to subtract current position
+            const timeFrameBase = data_controls && data_controls["used_time_frame_base"] ? data_controls["used_time_frame_base"] : 3600;
+            
+            // Convert absolute forecast_start_index (from midnight) to relative index in priceData
+            // priceData starts from midnight, so subtract the current slot offset
+            let arrayOffset = 0;
+            if (timeFrameBase === 900) {
+                // 15-min intervals: use currentSlot which includes both hours AND minutes
+                // currentSlot already calculated at top: currentHour * 4 + Math.floor(currentMinutes / 15)
+                arrayOffset = currentSlot;
+            } else {
+                // Hourly: use hour directly
+                arrayOffset = currentHour;
+            }
+            
+            const forecastIdx = Math.max(0, priceInfo.forecast_start_index - arrayOffset);
+            
+            // Split price data into real and forecast portions
+            const realPriceData = priceData.slice(0, forecastIdx);
+            const forecastPriceData = priceData.slice(forecastIdx);
+            
+            // Fill real portion with data, forecast portion with nulls (hidden)
+            const dataset10Data = [];
+            for (let i = 0; i < priceData.length; i++) {
+                dataset10Data.push(i < forecastIdx ? priceData[i] : null);
+            }
+            
+            // Fill new dataset 11 with forecast data, real portion with nulls (hidden)
+            const dataset11Data = [];
+            for (let i = 0; i < priceData.length; i++) {
+                dataset11Data.push(i >= forecastIdx ? priceData[i] : null);
+            }
+            
+            // Set dataset 10 (real prices) - solid orange
+            this.chartInstance.data.datasets[10].data = dataset10Data;
+            this.chartInstance.data.datasets[10].label = `Electricity Price (${localization.currency_symbol}/kWh)`;
+            this.chartInstance.data.datasets[10].borderColor = 'rgba(255, 69, 0, 0.8)';
+            this.chartInstance.data.datasets[10].borderDash = [];
+            
+            // Set dataset 11 (forecast prices) - gray
+            if (!this.chartInstance.data.datasets[11]) {
+                console.warn('[ChartManager] Dataset 11 does not exist for forecast visualization');
+            } else {
+                this.chartInstance.data.datasets[11].data = dataset11Data;
+                this.chartInstance.data.datasets[11].label = `Electricity Price Forecast - ${priceInfo.forecast_type.replace(/_/g, ' ')} (${localization.currency_symbol}/kWh)`;
+                this.chartInstance.data.datasets[11].borderColor = 'rgba(167, 167, 167, 0.7)';
+                // this.chartInstance.data.datasets[11].borderDash = [5, 5];  // Dotted pattern
+                this.chartInstance.data.datasets[11].borderWidth = 2;  // Thicker to see dashing
+                this.chartInstance.data.datasets[11].type = 'line';
+                this.chartInstance.data.datasets[11].yAxisID = 'y1';
+                this.chartInstance.data.datasets[11].stepped = true;
+                this.chartInstance.data.datasets[11].pointRadius = 0;
+                this.chartInstance.data.datasets[11].pointHoverRadius = 4;
+                this.chartInstance.data.datasets[11].fill = false;
+                this.chartInstance.data.datasets[11].hidden = false;
+            }
+            
+            this.chartInstance.options.scales.y1.title.text = `Price (${localization.currency_symbol}/kWh)`;
+        } else {
+            // No forecasting - all real prices
+            this.chartInstance.data.datasets[10].data = priceData;
+            this.chartInstance.data.datasets[10].label = `Electricity Price (${localization.currency_symbol}/kWh)`;
+            this.chartInstance.data.datasets[10].borderColor = 'rgba(255, 69, 0, 0.8)';
+            this.chartInstance.data.datasets[10].borderDash = [];
+            
+            // Hide dataset 11 if it exists
+            if (this.chartInstance.data.datasets[11]) {
+                this.chartInstance.data.datasets[11].data = [];
+                this.chartInstance.data.datasets[11].hidden = true;
+            }
+            
+            this.chartInstance.options.scales.y1.title.text = `Price (${localization.currency_symbol}/kWh)`;
         }
 
         this.chartInstance.update('none'); // Update without animation
@@ -149,7 +262,7 @@ class ChartManager {
     /**
      * Create new chart instance
      */
-    createChart(data_request, data_response, data_controls) {
+    createChart(data_request, data_response, data_controls, priceInfo = null) {
         const ctx = document.getElementById('energyChart').getContext('2d');
         this.chartInstance = new Chart(ctx, {
             type: 'bar',
@@ -164,11 +277,15 @@ class ChartManager {
                     { label: 'Battery SOC', data: [], type: 'line', backgroundColor: 'blue', borderColor: 'lightblue', borderWidth: 1, yAxisID: 'y2', pointRadius: 1, pointHoverRadius: 4, fill: false, hidden: false },
                     { label: 'Expense', data: [], type: 'line', borderColor: 'lightgreen', backgroundColor: 'green', borderWidth: 1, yAxisID: 'y1', stepped: true, hidden: true, pointRadius: 1, pointHoverRadius: 4 },
                     { label: 'Income', data: [], type: 'line', borderColor: 'lightyellow', backgroundColor: 'yellow', borderWidth: 1, yAxisID: 'y1', stepped: true, hidden: true, pointRadius: 1, pointHoverRadius: 4 },
+                    { label: 'Discharge Allowed', data: [], type: 'line', borderColor: 'rgba(144, 238, 144, 0.3)', backgroundColor: 'rgba(144, 238, 144, 0.05)', borderWidth: 1, fill: true, yAxisID: 'y3', pointRadius: 1, pointHoverRadius: 4, stepped: true },
+                    { label: 'Dynamic Discharge Allowed (PV > Load)', data: [], type: 'line', borderColor: 'rgba(50, 205, 50, 0.6)', backgroundColor: 'rgba(50, 205, 50, 0.1)', borderWidth: 1, fill: true, yAxisID: 'y3', pointRadius: 1, pointHoverRadius: 4, stepped: true, hidden: false },
                     { label: `Electricity Price (${localization.currency_symbol}/kWh)`, data: [], type: 'line', borderColor: 'rgba(255, 69, 0, 0.8)', backgroundColor: 'rgba(255, 165, 0, 0.2)', borderWidth: 1, yAxisID: 'y1', stepped: true, pointRadius: 1, pointHoverRadius: 4 },
-                    { label: 'Discharge Allowed', data: [], type: 'line', borderColor: 'rgba(144, 238, 144, 0.3)', backgroundColor: 'rgba(144, 238, 144, 0.05)', borderWidth: 1, fill: true, yAxisID: 'y3', pointRadius: 1, pointHoverRadius: 4, stepped: true }
+                    { label: 'Electricity Price - Forecast', data: [], type: 'line', borderColor: 'rgba(167, 167, 167, 0.7)', backgroundColor: 'rgba(220, 20, 60, 0.05)', borderWidth: 2, yAxisID: 'y1', stepped: true, pointRadius: 1, pointHoverRadius: 4, fill: false, hidden: true }
                 ]
             },
             options: {
+                responsive: true,
+                maintainAspectRatio: false,
                 scales: {
                     y: { beginAtZero: true, title: { display: true, text: 'Energy (kWh)', color: 'lightgray' }, grid: { color: 'rgb(54, 54, 54)' }, ticks: { color: 'lightgray' } },
                     y1: { beginAtZero: true, position: 'right', title: { display: true, text: `Price (${localization.currency_symbol}/kWh)`, color: 'lightgray' }, grid: { drawOnChartArea: false }, ticks: { color: 'lightgray', callback: value => value.toFixed(2) } },
@@ -179,6 +296,15 @@ class ChartManager {
                 plugins: {
                     legend: { display: !isMobile(), labels: { color: 'lightgray' } },
                     tooltip: {
+                        mode: 'index',  // Show all datasets for the hovered x-axis value
+                        intersect: false,  // Don't require intersection with data point
+                        backgroundColor: 'rgba(0, 0, 0, 0.8)',
+                        titleColor: '#fff',
+                        bodyColor: '#fff',
+                        borderColor: 'rgba(255, 255, 255, 0.3)',
+                        borderWidth: 1,
+                        padding: 12,
+                        displayColors: true,
                         callbacks: {
                             label: function (context) {
                                 // Default label
@@ -217,7 +343,7 @@ class ChartManager {
         // Set global reference for legacy compatibility
         chartInstance = this.chartInstance;
 
-        this.updateChart(data_request, data_response, data_controls); // Feed the content immediately after creation
+        this.updateChart(data_request, data_response, data_controls, priceInfo); // Feed the content immediately after creation
     }
 
     /**
@@ -252,15 +378,15 @@ class ChartManager {
 }
 
 // Legacy compatibility functions
-function createChart(data_request, data_response, data_controls) {
+function createChart(data_request, data_response, data_controls, priceInfo = null) {
     if (chartManager) {
-        chartManager.createChart(data_request, data_response, data_controls);
+        chartManager.createChart(data_request, data_response, data_controls, priceInfo);
     }
 }
 
-function updateChart(data_request, data_response, data_controls) {
+function updateChart(data_request, data_response, data_controls, priceInfo = null) {
     if (chartManager) {
-        chartManager.updateChart(data_request, data_response, data_controls);
+        chartManager.updateChart(data_request, data_response, data_controls, priceInfo);
     }
 }
 

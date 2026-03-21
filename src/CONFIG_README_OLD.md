@@ -8,6 +8,7 @@
     - [EOS Server Configuration](#eos-server-configuration)
     - [Electricity Price Configuration](#electricity-price-configuration)
     - [Battery Configuration](#battery-configuration)
+      - [Dynamic Battery Price Calculation](#dynamic-battery-price-calculation)
     - [PV Forecast Configuration](#pv-forecast-configuration)
       - [PV Forecast Source](#pv-forecast-source)
       - [PV Forecast installations](#pv-forecast-installations)
@@ -96,22 +97,36 @@ A default config file will be created with the first start, if there is no `conf
 
 - **`time_frame`**:  
   Granularity of the optimization and forecast time steps, in seconds.  
-  - `3600` for hourly (legacy mode)  
-  - `900` for 15-minute (quarterly) optimization  
-  This controls the resolution of the forecast and optimization arrays sent to EOS.  
-  For example, with `time_frame: 900`, all forecasts and optimization results will be calculated in 15-minute intervals.  
+  
+  **Backend-Specific Capabilities:**  
+  - **EOS Server:** Only supports `3600` (hourly granularity). 15-minute intervals cannot be used with EOS server.  
+  - **EVopt:** Supports both `3600` (hourly) and `900` (15-minute). Use 900 for more precise, dynamic optimization.  
+  
+  This controls the resolution of the forecast and optimization arrays sent to the optimization backend.  
+  If you set `time_frame: 900` with `eos_server`, it will be automatically corrected to 3600 at startup with a warning.  
+  
   **Note:**  
-  - `refresh_time` (see "Other Configuration Settings") controls how often EOS Connect sends a request to EOS.  
+  - `refresh_time` (see "Other Configuration Settings") controls how often EOS Connect sends a request to the optimization server.  
   - `time_frame` sets the time step granularity inside each optimization request.
 
-  Example:
+  Example (EVopt with 15-minute precision):
+  ```yaml
+  eos:
+    source: evopt
+    server: 192.168.1.94
+    port: 7050
+    timeout: 180
+    time_frame: 900   # EVopt supports 15-minute intervals for more precise optimization
+  ```
+  
+  Example (EOS server - hourly only):
   ```yaml
   eos:
     source: eos_server
     server: 192.168.1.94
     port: 8503
     timeout: 180
-    time_frame: 900   # Use 900 for 15-min steps, 3600 for hourly steps
+    time_frame: 3600  # EOS server only supports hourly intervals
   ```
 
 ---
@@ -197,14 +212,87 @@ A default config file will be created with the first start, if there is no `conf
 - **`battery.max_soc_percentage`**:  
   Maximum state of charge for the battery, as a percentage.
 
-- **`price_euro_per_wh_accu`**:
-  Price for battery in €/Wh - can be used to shift the result over the day according to the available energy (more details follow).
-
 - **`battery.charging_curve_enabled`**:  
   Enables or disables the dynamic charging curve for the battery.  
-  - `true`: The system will automatically reduce the maximum charging power as the battery SOC increases, helping to protect battery health and optimize efficiency.  
-  - `false`: The battery will always charge at the configured maximum power, regardless of SOC.  
+  - `true`: The system will automatically adjust the maximum charging power based on two factors:
+    - **SOC-based reduction**: At SOC ≤50%, battery charges at full configured power. Above 50%, power is exponentially reduced to protect battery health and optimize charging efficiency. At 95% SOC, power is reduced to ~5% of maximum.
+    - **Temperature-based protection** (if `sensor_battery_temperature` is configured): Additional power reduction is applied during extreme temperatures:
+      - Below 0°C: 5-7.5% power (prevents lithium plating in LiFePO4 batteries)
+      - 0-5°C: 5-15% power (gradual warm-up)
+      - 5-15°C: 15-100% power (transition to optimal range)
+      - 15-45°C: 100% power (optimal operating range, only SOC-based reduction applies)
+      - 45-50°C: 100-45% power (heat warning)
+      - 50-60°C: 45-7.5% power (severe heat protection)
+      - Above 60°C: 5-7.5% power (critical protection)
+    - The final charging power is the product of both SOC and temperature multipliers (e.g., at -2°C with 51% SOC: ~0.65 kW instead of 10 kW)
+  - `false`: The battery will always charge at the configured maximum power, regardless of SOC or temperature.  
   - **Default:** `true`
+
+- **`battery.sensor_battery_temperature`**:  
+  Sensor/item identifier for battery temperature in °C. Optional but highly recommended for battery protection.
+  - If configured, enables automatic temperature-based charging power reduction to protect the battery from damage during cold/hot conditions.
+  - Supports Home Assistant entities (e.g., `sensor.battery_temperature`) and OpenHAB items.
+  - Valid temperature range: -30°C to 70°C (values outside this range are ignored for safety)
+  - If not configured or sensor fails, temperature protection is disabled and only SOC-based curve is used.
+  - **Default:** `""` (disabled)
+  - **Example for BYD Battery Box**: `sensor.byd_battery_box_premium_hv_temperatur`
+
+- **`battery.price_euro_per_wh_accu`**:
+  Price for battery in €/Wh - can be used to shift the result over the day according to the available energy (more details follow).
+
+
+- **`battery.price_euro_per_wh_sensor`**:  
+ Sensor/item identifier that exposes the battery price in €/Wh. If `battery.source` is set to `homeassistant` or `openhab` and a sensor/item is configured here, the system will fetch the value from that sensor/item. If no sensor is configured, the static value at `price_euro_per_wh_accu` will be used. For Home Assistant use an entity ID (e.g., `sensor.battery_price`); for OpenHAB use an item name (e.g., `BatteryPrice`).
+
+- **`battery.price_calculation_enabled`**:  
+  Enables dynamic battery price calculation by analyzing historical charging events.  
+  - `true`: The system will analyze the last 96 hours (configurable) of power data to determine the real cost of energy stored in the battery.  
+  - `false`: Uses the static price or sensor value.  
+  - **Default:** `false`
+
+- **`battery.price_update_interval`**:  
+  Interval in seconds between dynamic price recalculations.  
+  - **Default:** `900` (15 minutes)
+
+- **`battery.price_history_lookback_hours`**:  
+  Number of hours of history to analyze for the price calculation.  
+  - **Default:** `96`
+
+- **`battery.battery_power_sensor`**:  
+  Home Assistant entity ID or OpenHAB item name for the battery power sensor (in Watts). Positive values must represent charging.
+
+- **`battery.pv_power_sensor`**:  
+  Home Assistant entity ID or OpenHAB item name for the total PV power sensor (in Watts).
+
+- **`battery.grid_power_sensor`**:  
+  Home Assistant entity ID or OpenHAB item name for the grid power sensor (in Watts). Positive values represent import from the grid.
+
+- **`battery.load_power_sensor`**:  
+  Home Assistant entity ID or OpenHAB item name for the household load power sensor (in Watts).
+
+- **`battery.price_sensor`**:  
+  Home Assistant entity ID or OpenHAB item name for the current electricity price sensor (in €/kWh or ct/kWh).
+
+- **`battery.charging_threshold_w`**:  
+  Minimum battery power in Watts to consider the battery as "charging" during historical analysis.  
+  - **Default:** `50.0`
+
+- **`battery.grid_charge_threshold_w`**:  
+  Minimum grid import power in Watts to attribute charging energy to the grid rather than PV surplus.  
+  - **Default:** `100.0`
+
+
+
+#### Dynamic Battery Price Calculation
+
+When `price_calculation_enabled` is set to `true`, the system performs a detailed analysis of your battery's charging history to determine the real cost of the energy currently stored.
+
+**How it works:**
+1. **Event Detection:** The system scans historical data (default 48h) to identify "charging events" where the battery power was above the `charging_threshold_w`.
+2. **Source Attribution:** For each event, it compares battery power with PV production and Grid import. If grid import is significant (above `grid_charge_threshold_w`), the energy is attributed to the grid at the current market price. Otherwise, it is attributed to PV surplus at the `feed_in_price` (opportunity cost).
+3. **Inventory Valuation (LIFO):** Instead of a simple average, the system uses a **Last-In, First-Out** model. It looks at the most recent charging sessions that match your current battery level. This ensures the price reflects the actual "value" of the energy currently inside the battery.
+4. **Optimizer Integration:** This resulting price is used by the optimizer to decide when it is profitable to discharge the battery.
+5. **Efficiency:** To minimize API load, the system uses a two-step fetching strategy: it first fetches low-resolution data to find events, and then high-resolution data only for the specific periods when the battery was actually charging.
 
 ---
 
@@ -471,7 +559,9 @@ battery:
   min_soc_percentage: 5 # URL for battery soc in %
   max_soc_percentage: 100 # URL for battery soc in %
   price_euro_per_wh_accu: 0 # price for battery in €/Wh
-  charging_curve_enabled: true # enable dynamic charging curve for battery
+  price_euro_per_wh_sensor: "" # Home Assistant entity (e.g. sensor.battery_price) providing €/Wh
+  charging_curve_enabled: true # enable dynamic charging curve for battery (SOC-based + temperature-based if sensor configured)
+  sensor_battery_temperature: "" # sensor for battery temperature in °C (e.g., sensor.byd_battery_box_premium_hv_temperatur) - enables temperature protection
 # List of PV forecast source configuration
 pv_forecast_source:
   source: akkudoktor # data source for solar forecast providers akkudoktor, openmeteo, openmeteo_local, forecast_solar, evcc, solcast, default (default uses akkudoktor)
@@ -548,7 +638,8 @@ battery:
   min_soc_percentage: 5 # URL for battery soc in %
   max_soc_percentage: 100 # URL for battery soc in %
   price_euro_per_wh_accu: 0 # price for battery in €/Wh
-  charging_curve_enabled: true # enable dynamic charging curve for battery
+  charging_curve_enabled: true # enable dynamic charging curve for battery (SOC-based + temperature-based if sensor configured)
+  sensor_battery_temperature: "" # sensor for battery temperature in °C - enables temperature protection (optional)
 # List of PV forecast source configuration
 pv_forecast_source:
   source: akkudoktor # data source for solar forecast providers akkudoktor, openmeteo, openmeteo_local, forecast_solar, evcc, solcast, default (default uses akkudoktor)

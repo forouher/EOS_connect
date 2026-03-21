@@ -38,30 +38,33 @@ class OptimizationInterface:
         )
         self.time_frame_base = time_frame_base
         self.time_zone = timezone
+        self.config = config  # Store config for accessing optimization settings
 
         if self.eos_source == "evopt":
             self.backend = EVOptBackend(
                 self.base_url, self.time_frame_base, self.time_zone
             )
             self.backend_type = "evopt"
-            logger.info("[OPT] Using EVopt backend")
+            logger.info("[OPTIMIZATION] Using EVopt backend")
         elif self.eos_source == "eos_server":
             self.backend = EOSBackend(
                 self.base_url, self.time_frame_base, self.time_zone
             )
             self.backend_type = "eos_server"
-            logger.info("[OPT] Using EOS Server backend")
+            logger.info("[OPTIMIZATION] Using EOS Server backend")
         else:
             raise ValueError(f"Unknown backend source: {self.eos_source}")
 
         self.last_start_solution = None
         self.home_appliance_released = False
         self.home_appliance_start_hour = None
+        self.last_eos_request = None  # Store last request for dynamic override logic
         self.last_control_data = [
             {
                 "ac_charge_demand": 0,
                 "dc_charge_demand": 0,
                 "discharge_allowed": False,
+                "dyn_override_active": False,
                 "error": 0,
                 "hour": -1,
             },
@@ -69,6 +72,7 @@ class OptimizationInterface:
                 "ac_charge_demand": 0,
                 "dc_charge_demand": 0,
                 "discharge_allowed": False,
+                "dyn_override_active": False,
                 "error": 0,
                 "hour": -1,
             },
@@ -79,13 +83,20 @@ class OptimizationInterface:
         Main entry point for optimization.
         Accepts EOS-format request, returns EOS-format response.
         """
+        self.last_eos_request = eos_request  # Store for dynamic override logic
         eos_response, avg_runtime = self.backend.optimize(eos_request, timeout)
         return eos_response, avg_runtime
 
     def examine_response_to_control_data(self, optimized_response_in):
         """
         Examines the optimized response data for control parameters.
-        Returns tuple: (ac_charge, dc_charge, discharge_allowed, response_error)
+
+        Returns tuple: (ac_charge, dc_charge, discharge_allowed, response_error, dyn_override_array)
+            - ac_charge (float): AC charge demand as relative value
+            - dc_charge (float): DC charge demand as relative value
+            - discharge_allowed (bool): Whether discharge is allowed (may include dynamic override)
+            - response_error (bool): Whether an error occurred during processing
+            - dyn_override_array (list[bool]): Dynamic override state for each time slot (PV > Load condition)
         """
         # current_hour = datetime.now(self.time_zone).hour
         # ac_charge_demand_relative = None
@@ -103,7 +114,7 @@ class OptimizationInterface:
         #     ]
         #     ac_charge_demand_relative = ac_charge_demand_relative[current_hour]
         #     logger.debug(
-        #         "[OPT] AC charge demand for current hour %s:00 -> %s %%",
+        #         "[OPTIMIZATION] AC charge demand for current hour %s:00 -> %s %%",
         #         current_hour,
         #         ac_charge_demand_relative * 100,
         #     )
@@ -117,7 +128,7 @@ class OptimizationInterface:
         #     ]
         #     dc_charge_demand_relative = dc_charge_demand_relative[current_hour]
         #     logger.debug(
-        #         "[OPT] DC charge demand for current hour %s:00 -> %s %%",
+        #         "[OPTIMIZATION] DC charge demand for current hour %s:00 -> %s %%",
         #         current_hour,
         #         dc_charge_demand_relative * 100,
         #     )
@@ -131,7 +142,7 @@ class OptimizationInterface:
         #     ]
         #     discharge_allowed = bool(discharge_allowed[current_hour])
         #     logger.debug(
-        #         "[OPT] Discharge allowed for current hour %s:00 %s",
+        #         "[OPTIMIZATION] Discharge allowed for current hour %s:00 %s",
         #         current_hour,
         #         discharge_allowed,
         #     )
@@ -156,9 +167,10 @@ class OptimizationInterface:
             else 0
         )
 
-        ac_charge_demand_relative = None
-        dc_charge_demand_relative = None
-        discharge_allowed = None
+        ac_charge_demand_relative = 0
+        dc_charge_demand_relative = 0
+        discharge_allowed = True
+        dyn_override_allowed_array = []  # Array to store override states for all slots
         response_error = False
 
         if "ac_charge" in optimized_response_in:
@@ -166,8 +178,18 @@ class OptimizationInterface:
             self.last_control_data[0]["ac_charge_demand"] = ac_charge[current_step]
             self.last_control_data[1]["ac_charge_demand"] = ac_charge[next_step]
             ac_charge_demand_relative = ac_charge[current_step]
+            logger.info(
+                "[CHARGE_DEMAND] Optimizer response extraction: ac_charge[step=%d] = %.3f (%.1f%%) "
+                "(time=%s, next_step=%d with value=%.3f)",
+                current_step,
+                ac_charge_demand_relative,
+                ac_charge_demand_relative * 100,
+                current_step_time.strftime("%Y-%m-%d %H:%M"),
+                next_step,
+                ac_charge[next_step],
+            )
             logger.debug(
-                "[OPT] AC charge demand for current step %s (%s) -> %s %%",
+                "[OPTIMIZATION] AC charge demand for current step %s (%s) -> %s %%",
                 current_step,
                 current_step_time.strftime("%Y-%m-%d %H:%M"),
                 ac_charge_demand_relative * 100,
@@ -178,7 +200,7 @@ class OptimizationInterface:
             self.last_control_data[1]["dc_charge_demand"] = dc_charge[next_step]
             dc_charge_demand_relative = dc_charge[current_step]
             logger.debug(
-                "[OPT] DC charge demand for current step %s (%s) -> %s %%",
+                "[OPTIMIZATION] DC charge demand for current step %s (%s) -> %s %%",
                 current_step,
                 current_step_time.strftime("%Y-%m-%d %H:%M"),
                 dc_charge_demand_relative * 100,
@@ -193,11 +215,102 @@ class OptimizationInterface:
             ]
             discharge_allowed = bool(discharge_allowed_arr[current_step])
             logger.debug(
-                "[OPT] Discharge allowed for current step %s (%s): %s",
+                "[OPTIMIZATION] Discharge allowed for current step %s (%s): %s",
                 current_step,
                 current_step_time.strftime("%Y-%m-%d %H:%M"),
                 discharge_allowed,
             )
+
+            # Dynamic override: Calculate for ALL slots if configured and request data available
+            # NOTE: Dynamic override priority is enforced at the state determination stage.
+            # Manual override (if active) takes precedence over dynamic override.
+            # BaseControl.__set_current_overall_state() checks manual override FIRST and returns
+            # early if active, ensuring manual override always wins regardless of dynamic override state.
+            dyn_override_enabled = self.config.get(
+                "dyn_override_discharge_allowed_pv_greater_load", False
+            )
+            dyn_override_active = False
+
+            # Initialize array with all False - will be updated for overridden slots
+            dyn_override_allowed_array = [False] * len(discharge_allowed_arr)
+
+            if dyn_override_enabled and self.last_eos_request:
+                try:
+                    ems_data = self.last_eos_request.get("ems", {})
+                    pv_prognose = ems_data.get("pv_prognose_wh", [])
+                    gesamtlast = ems_data.get("gesamtlast", [])
+
+                    if pv_prognose and gesamtlast:
+                        # Check all slots for potential overrides
+                        for slot_idx in range(
+                            min(
+                                len(pv_prognose),
+                                len(gesamtlast),
+                                len(discharge_allowed_arr),
+                            )
+                        ):
+                            pv_forecast = pv_prognose[slot_idx]
+                            load_forecast = gesamtlast[slot_idx]
+
+                            # Override applies if: PV > Load AND optimizer said no discharge
+                            # BUT NOT if AC charging is requested (grid charging takes precedence)
+                            ac_charge_at_slot = (
+                                optimized_response_in.get(
+                                    "ac_charge", [None] * len(discharge_allowed_arr)
+                                )[slot_idx]
+                                if slot_idx
+                                < len(optimized_response_in.get("ac_charge", []))
+                                else 0
+                            )
+                            if (
+                                pv_forecast > load_forecast
+                                and not discharge_allowed_arr[slot_idx]
+                                and (
+                                    ac_charge_at_slot is None or ac_charge_at_slot <= 0
+                                )
+                            ):
+                                dyn_override_allowed_array[slot_idx] = True
+
+                                # Log for current slot
+                                if slot_idx == current_step:
+                                    dyn_override_active = True
+                                    logger.info(
+                                        "[OPTIMIZATION] Dynamic PV>Load override ACTIVATED for "
+                                        "step %s (%s): PV=%.0f Wh > Load=%.0f Wh "
+                                        "- discharge allowed overridden to TRUE",
+                                        slot_idx,
+                                        (
+                                            today_midnight
+                                            + timedelta(
+                                                seconds=slot_idx * self.time_frame_base
+                                            )
+                                        ).strftime("%Y-%m-%d %H:%M"),
+                                        pv_forecast,
+                                        load_forecast,
+                                    )
+                except (KeyError, IndexError, TypeError) as e:
+                    logger.warning(
+                        "[OPTIMIZATION] Error calculating dynamic override array: %s",
+                        str(e),
+                    )
+
+            # Update the stored discharge_allowed value with the override result for current slot
+            # NOTE: Even if override is applied here, AC charging takes final precedence in
+            # BaseControl.__set_current_overall_state() which checks ac_charge_demand FIRST
+            if dyn_override_allowed_array and current_step < len(
+                dyn_override_allowed_array
+            ):
+                if dyn_override_allowed_array[current_step]:
+                    discharge_allowed = True
+                    dyn_override_active = True
+
+            self.last_control_data[0]["discharge_allowed"] = discharge_allowed
+            # Store the dynamic override state for later use (e.g., in web UI)
+            self.last_control_data[0]["dyn_override_active"] = dyn_override_active
+            # Store the array of override states for all slots
+            self.last_control_data[0][
+                "dyn_override_allowed_array"
+            ] = dyn_override_allowed_array
 
         current_hour = datetime.now(self.time_zone).hour
         if (
@@ -206,13 +319,22 @@ class OptimizationInterface:
         ):
             self.set_last_start_solution(optimized_response_in["start_solution"])
             # logger.debug(
-            #     "[OPT] Start solution for current hour %s:00 %s",
+            #     "[OPTIMIZATION] Start solution for current hour %s:00 %s",
             #     current_hour,
             #     self.get_last_start_solution(),
             # )
         else:
-            logger.error("[OPT] No control data in optimized response")
+            logger.error("[OPTIMIZATION] No control data in optimized response")
             response_error = True
+
+        if response_error:
+            # Set safe defaults in last_control_data
+            self.last_control_data[0]["ac_charge_demand"] = 0
+            self.last_control_data[0]["dc_charge_demand"] = 0
+            self.last_control_data[0]["discharge_allowed"] = True
+            self.last_control_data[1]["ac_charge_demand"] = 0
+            self.last_control_data[1]["dc_charge_demand"] = 0
+            self.last_control_data[1]["discharge_allowed"] = True
 
         self.last_control_data[0]["error"] = int(response_error)
         self.last_control_data[1]["error"] = int(response_error)
@@ -225,7 +347,7 @@ class OptimizationInterface:
                 self.home_appliance_start_hour == current_hour
             )
             logger.debug(
-                "[OPT] Home appliance - current hour %s:00 - start hour %s - is Released: %s",
+                "[OPTIMIZATION] Home appliance - current hour %s:00 - start hour %s - is Released: %s",
                 current_hour,
                 self.home_appliance_start_hour,
                 self.home_appliance_released,
@@ -236,6 +358,7 @@ class OptimizationInterface:
             dc_charge_demand_relative,
             discharge_allowed,
             response_error,
+            dyn_override_allowed_array,
         )
 
     def set_last_start_solution(self, last_start_solution):

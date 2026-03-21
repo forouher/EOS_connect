@@ -60,12 +60,13 @@ class ConfigManager:
                         "port": 8503,  # port for EOS server (8503) or EVopt server (7050) - default: 8503
                         "timeout": 180,  # Default timeout for EOS optimize request
                         "time_frame": 3600,  # Time frame for EOS optimize request in seconds
+                        "dyn_override_discharge_allowed_pv_greater_load": False,  # Dynamic override for discharge when PV > Load
                     }
                 ),
                 "price": CommentedMap(
                     {
                         "source": "default",
-                        "token": "tibberBearerToken",  # token for electricity price (e.g. Tibber bearer token or Stromligning supplier/product/group)
+                        "token": "tibberBearerToken",  # token for electricity price
                         "fixed_price_adder_ct": 0.0,  # Describes the fixed cost addition in ct per kWh.
                         "relative_price_multiplier": 0.00,  # Applied to (base energy price + fixed_price_adder_ct). Use a decimal (e.g., 0.05 for 5%).
                         # 24 hours array with fixed end customer prices in ct/kWh over the day
@@ -74,6 +75,10 @@ class ConfigManager:
                         + "34.28,34.28,34.28,34.28,28,23",
                         "feed_in_price": 0.0,  # feed in price for the grid
                         "negative_price_switch": False,  # switch for negative price
+                        # Smart price prediction with energyforecast.de (when primary source lacks tomorrow prices)
+                        "energyforecast_enabled": False,  # enable smart price prediction
+                        "energyforecast_token": "demo_token",  # API token from energyforecast.de
+                        "energyforecast_market_zone": "DE-LU",  # Market zone: DE-LU, AT, FR, NL, BE, PL, DK1, DK2
                     }
                 ),
                 "battery": CommentedMap(
@@ -88,15 +93,27 @@ class ConfigManager:
                         "max_charge_power_w": 5000,
                         "min_soc_percentage": 5,
                         "max_soc_percentage": 100,
-                        "price_euro_per_wh_accu": 0.0,  # price for battery in euro/Wh
                         "charging_curve_enabled": True,  # enable charging curve
+                        "sensor_battery_temperature": "",  # sensor for battery temperature
+                        "price_euro_per_wh_accu": 0.0,  # price for battery in euro/Wh
+                        "price_euro_per_wh_sensor": "",  # sensor/item providing battery energy cost in €/Wh
+                        "price_calculation_enabled": False,
+                        "price_update_interval": 900,
+                        "price_history_lookback_hours": 96,
+                        "battery_power_sensor": "",
+                        "pv_power_sensor": "",
+                        "grid_power_sensor": "",
+                        "load_power_sensor": "",
+                        "price_sensor": "",
+                        "charging_threshold_w": 50.0,
+                        "grid_charge_threshold_w": 100.0,
                     }
                 ),
                 "pv_forecast_source": CommentedMap(
                     {
                         # openmeteo, openmeteo_local, forecast_solar, akkudoktor
-                        "source": "akkudoktor",  # akkudoktor, openmeteo, openmeteo_local, forecast_solar, evcc, solcast, default
-                        "api_key": "",  # API key for solcast (required when source is solcast)
+                        "source": "akkudoktor",  # akkudoktor, openmeteo, openmeteo_local, forecast_solar, evcc, solcast, victron, default
+                        "api_key": "",  # API key for Solcast and Victron (required when source is 'solcast' or 'victron')
                     }
                 ),
                 "pv_forecast": [
@@ -151,6 +168,7 @@ class ConfigManager:
                 "time_zone": "Europe/Berlin",  # Add default time zone
                 "eos_connect_web_port": 8081,  # Default port for EOS connect server
                 "log_level": "info",  # Default log level
+                "request_timeout": 10,  # Request timeout for Home Assistant and OpenHAB API calls in seconds (5-60)
             }
         )
         # load configuration
@@ -211,6 +229,12 @@ class ConfigManager:
         )
         config["eos"].yaml_add_eol_comment(
             "timeout for EOS optimize request in seconds - default: 180", "timeout"
+        )
+        config["eos"].yaml_add_eol_comment(
+            "Dynamic discharge override when PV forecast is greater than load - default: false"
+            + " - when enabled, discharge is allowed even if optimizer says avoid discharge,"
+            + " if pv_forecast > load in current time slot",
+            "dyn_override_discharge_allowed_pv_greater_load",
         )
         # price configuration
         config.yaml_set_comment_before_after_key(
@@ -282,9 +306,53 @@ class ConfigManager:
             "price for battery in euro/Wh - default: 0.0", "price_euro_per_wh_accu"
         )
         config["battery"].yaml_add_eol_comment(
+            "sensor/item providing the battery price (€/Wh) - HA entity or OpenHAB item",
+            "price_euro_per_wh_sensor",
+        )
+        config["battery"].yaml_add_eol_comment(
             "enabling charging curve for controlled charging power"
             + " according to the SOC (default: true)",
             "charging_curve_enabled",
+        )
+        config["battery"].yaml_add_eol_comment(
+            "sensor for battery temperature in °C", "sensor_battery_temperature"
+        )
+        config["battery"].yaml_add_eol_comment(
+            "enable dynamic battery price calculation based on history",
+            "price_calculation_enabled",
+        )
+        config["battery"].yaml_add_eol_comment(
+            "interval for price update in seconds - default: 900 (15 min)",
+            "price_update_interval",
+        )
+        config["battery"].yaml_add_eol_comment(
+            "hours of history to analyze for price calculation - default: 96",
+            "price_history_lookback_hours",
+        )
+        config["battery"].yaml_add_eol_comment(
+            "HA entity ID or OpenHAB item for battery power in W (positive = charging)",
+            "battery_power_sensor",
+        )
+        config["battery"].yaml_add_eol_comment(
+            "HA entity ID or OpenHAB item for PV power in W", "pv_power_sensor"
+        )
+        config["battery"].yaml_add_eol_comment(
+            "HA entity ID or OpenHAB item for grid power in W (positive = import)",
+            "grid_power_sensor",
+        )
+        config["battery"].yaml_add_eol_comment(
+            "HA entity ID or OpenHAB item for load power in W", "load_power_sensor"
+        )
+        config["battery"].yaml_add_eol_comment(
+            "HA entity ID or OpenHAB item for electricity price in €/kWh or ct/kWh",
+            "price_sensor",
+        )
+        config["battery"].yaml_add_eol_comment(
+            "minimum battery power to consider as charging (W)", "charging_threshold_w"
+        )
+        config["battery"].yaml_add_eol_comment(
+            "minimum grid surplus to consider as grid charging (W)",
+            "grid_charge_threshold_w",
         )
 
         # pv forecast source configuration
@@ -293,13 +361,14 @@ class ConfigManager:
         )
         config["pv_forecast_source"].yaml_add_eol_comment(
             "data source for solar forecast providers akkudoktor, openmeteo, openmeteo_local,"
-            + " forecast_solar, evcc, solcast, default (default uses akkudoktor)",
+            + " forecast_solar, evcc, solcast, victron, default (default uses akkudoktor)",
             "source",
         )
         config["pv_forecast_source"].yaml_add_eol_comment(
-            "API key for Solcast (required only when source is 'solcast')",
+            "API key for Solcast and Victron (required only when source is 'solcast' or 'victron')",
             "api_key",
         )
+
         # pv forecast configuration
         config.yaml_set_comment_before_after_key(
             "pv_forecast",
@@ -373,6 +442,12 @@ class ConfigManager:
         config["inverter"].yaml_add_eol_comment(
             "Max inverter PV charge rate in W - default: 5000", "max_pv_charge_rate"
         )
+        config["inverter"].yaml_add_eol_comment(
+            "Access token for Home Assistant (homeassistant only)", "token"
+        )
+        config["inverter"].yaml_add_eol_comment(
+            "URL for Home Assistant (homeassistant only)", "url"
+        )
         # evcc configuration
         config.yaml_set_comment_before_after_key("evcc", before="EVCC configuration")
         config["evcc"].yaml_add_eol_comment(
@@ -426,6 +501,11 @@ class ConfigManager:
             "Log level for the application : debug, info, warning, error - default: info",
             "log_level",
         )
+        # request timeout configuration
+        config.yaml_add_eol_comment(
+            "Request timeout for Home Assistant and OpenHAB API calls in seconds (5-120) - default: 10",
+            "request_timeout",
+        )
         return config
 
     def load_config(self):
@@ -439,6 +519,7 @@ class ConfigManager:
             with open(self.config_file, "r", encoding="utf-8") as f:
                 self.config.update(self.yaml.load(f))
             self.check_eos_timeout_and_refreshtime()
+            self.check_energyforecast_config()
         else:
             self.write_config()
             print("Config file not found. Created a new one with default values.")
@@ -458,6 +539,7 @@ class ConfigManager:
     def check_eos_timeout_and_refreshtime(self):
         """
         Check if the eos timeout is smaller than the refresh time
+        and validate request_timeout range
         """
         eos_timeout_seconds = self.config["eos"]["timeout"]
         refresh_time_seconds = self.config["refresh_time"] * 60
@@ -472,3 +554,59 @@ class ConfigManager:
                 refresh_time_seconds,
             )
             sys.exit(0)
+
+        # Validate and clamp request_timeout to 5-120 seconds range
+        request_timeout = self.config.get("request_timeout", 10)
+        if request_timeout < 5:
+            logger.warning(
+                "[Config] request_timeout (%s s) is below minimum (5 s). Setting to 5 s.",
+                request_timeout,
+            )
+            self.config["request_timeout"] = 5
+        elif request_timeout > 120:
+            logger.warning(
+                "[Config] request_timeout (%s s) exceeds maximum (120 s). Setting to 120 s.",
+                request_timeout,
+            )
+            self.config["request_timeout"] = 120
+
+    def check_energyforecast_config(self):
+        """
+        Validate energyforecast.de configuration when enabled.
+
+        If energyforecast_enabled is True:
+        - Requires valid token (not empty or "demo_token")
+        - Requires valid market_zone from supported list
+        """
+        price_config = self.config.get("price", {})
+
+        if not price_config.get("energyforecast_enabled", False):
+            # Not enabled, no validation needed
+            return
+
+        token = price_config.get("energyforecast_token", "")
+        market_zone = price_config.get("energyforecast_market_zone", "")
+
+        # Supported market zones per energyforecast.de API
+        valid_zones = ["DE-LU", "AT", "FR", "NL", "BE", "PL", "DK1", "DK2"]
+
+        # Validate token
+        if not token or token == "demo_token":
+            logger.warning(
+                "[Config] energyforecast_enabled is True, but token is '%s'. "
+                "Fallback will use demo token (limited functionality). "
+                "Get a free API key from https://www.energyforecast.de/api_keys",
+                token if token else "(empty)",
+            )
+
+        # Validate market zone
+        if market_zone not in valid_zones:
+            logger.error(
+                "[Config] Invalid energyforecast_market_zone '%s'. "
+                "Must be one of: %s. Please correct in config.yaml",
+                market_zone,
+                ", ".join(valid_zones),
+            )
+            # Set to default to prevent crash
+            self.config["price"]["energyforecast_market_zone"] = "DE-LU"
+            logger.warning("[Config] Defaulting to market zone: DE-LU")

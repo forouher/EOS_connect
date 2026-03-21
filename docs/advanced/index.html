@@ -1,0 +1,1526 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Advanced Features - EOS Connect Documentation</title>
+    <link rel="stylesheet" href="../assets/css/style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.2/css/all.min.css">
+</head>
+<body>
+    <!-- DRAFT BANNER - REMOVE WHEN FINALIZED -->
+    <div class="draft-banner">
+        <i class="fas fa-exclamation-triangle"></i> DRAFT DOCUMENTATION - UNDER REVIEW <i class="fas fa-exclamation-triangle"></i>
+    </div>
+    <!-- END DRAFT BANNER -->
+
+    <nav class="nav-header">
+        <div class="nav-container">
+            <a href="../index.html" class="nav-logo">
+                <img src="../assets/images/icon.png" alt="EOS Connect" style="height: 48px; vertical-align: middle; margin-right: 8px;">
+                <span>EOS Connect</span>
+                <span class="version-badge">v0.2.31</span>
+            </a>
+            <button class="mobile-menu-toggle" onclick="toggleMobileMenu()" aria-label="Toggle menu">
+                <i class="fas fa-bars"></i>
+            </button>
+            <ul class="nav-menu">
+                <li><a href="../index.html">Home</a></li>
+                <li><a href="../what-is/index.html">What Is</a></li>
+                <li><a href="../user-guide/index.html">User Guide</a></li>
+                <li><a href="../user-guide/configuration.html">Configuration</a></li>
+                <li><a href="index.html" class="active">Advanced</a></li>
+                <li><a href="../developer/index.html">Developer</a></li>
+                <li><a href="https://github.com/ohAnd/EOS_connect" target="_blank"><i class="fab fa-github"></i> GitHub</a></li>
+                <li><a href="https://github.com/sponsors/ohAnd" target="_blank" title="Sponsor the project"><i class="fas fa-mug-hot"></i></a></li>
+            </ul>
+        </div>
+    </nav>
+
+    <div class="container">
+        <div class="page-wrapper">
+            <aside class="toc-sidebar">
+                <h3>On This Page</h3>
+                <nav class="toc-nav">
+                    <a href="#rest-api" class="toc-link">REST API</a>
+                    <a href="#api-examples" class="toc-link toc-sub">→ API Examples</a>
+                    <a href="#field-reference" class="toc-link toc-sub">→ Field Reference</a>
+                    <a href="#current-states" class="toc-link toc-sub">→ current_states</a>
+                    <a href="#battery-fields" class="toc-link toc-sub">→ battery</a>
+                    <a href="#stored-energy" class="toc-link toc-sub">→ stored_energy</a>
+                    <a href="#charging-sessions" class="toc-link toc-sub">→ charging_sessions</a>
+                    <a href="#system-mode-ref" class="toc-link toc-sub">→ System Modes</a>
+                    <a href="#logging-api" class="toc-link toc-sub">→ Logging API</a>
+                    <a href="#mqtt" class="toc-link">MQTT Integration</a>
+                    <a href="#mqtt-published" class="toc-link toc-sub">→ Published Topics</a>
+                    <a href="#mqtt-subscribed" class="toc-link toc-sub">→ Subscribed Topics</a>
+                    <a href="#mqtt-mode-control" class="toc-link toc-sub">→ Mode Control</a>
+                    <a href="#mqtt-update-topics" class="toc-link toc-sub">→ Update Topics</a>
+                    <a href="#mqtt-examples" class="toc-link toc-sub">→ Examples</a>
+                    <a href="#integrations" class="toc-link">Integrations</a>
+                    <a href="#automation" class="toc-link">Automation</a>
+                    <a href="#sensor-detection" class="toc-link">Sensor Auto-Detection</a>
+                </nav>
+            </aside>
+
+            <main class="main-content">
+        <div class="hero">
+            <h1>Advanced Features</h1>
+            <p>API integration, MQTT control, external system integration, and automation</p>
+        </div>
+
+        <!-- Navigation Blocks -->
+        <div class="main-blocks">
+            <div class="block-card">
+                <div class="card-header">
+                    <div class="icon"><i class="fas fa-exchange-alt"></i></div>
+                    <h3>REST API</h3>
+                </div>
+                <p>HTTP endpoints for reading system state and controlling EOS Connect</p>
+                <a href="#rest-api" class="btn">Learn More →</a>
+            </div>
+            <div class="block-card">
+                <div class="card-header">
+                    <div class="icon"><i class="fas fa-satellite-dish"></i></div>
+                    <h3>MQTT Integration</h3>
+                </div>
+                <p>Real-time data publishing and command subscription via MQTT</p>
+                <a href="#mqtt" class="btn">Learn More →</a>
+            </div>
+            <div class="block-card">
+                <div class="card-header">
+                    <div class="icon"><i class="fas fa-plug"></i></div>
+                    <h3>Integrations</h3>
+                </div>
+                <p>Home Assistant, OpenHAB, EVCC, and inverter integration details</p>
+                <a href="#integrations" class="btn">Learn More →</a>
+            </div>
+            <div class="block-card">
+                <div class="card-header">
+                    <div class="icon"><i class="fas fa-robot"></i></div>
+                    <h3>Automation</h3>
+                </div>
+                <p>Examples for automating EOS Connect with your smart home</p>
+                <a href="#automation" class="btn">Learn More →</a>
+            </div>
+        </div>
+
+        <!-- REST API Section -->
+        <div class="content-section" id="rest-api">
+            <h2><i class="fas fa-globe"></i> REST API</h2>
+            <p>EOS Connect provides a comprehensive RESTful web API for real-time data access and remote control on port 8081 (configurable). All endpoints return JSON and can be accessed via HTTP requests.</p>
+
+            <div class="alert alert-info">
+                <strong><i class="fas fa-info-circle"></i> Base URL:</strong> All endpoints use <code>http://&lt;host&gt;:&lt;port&gt;/</code> (Default port: 8081)
+            </div>
+
+            <h3>Main Endpoints</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Endpoint</th>
+                        <th>Method</th>
+                        <th>Description</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>/json/current_controls.json</code></td>
+                        <td>GET</td>
+                        <td>Current system control states (AC/DC charge, mode, discharge state) - reflects final combined state after all overrides</td>
+                    </tr>
+                    <tr>
+                        <td><code>/json/optimize_request.json</code></td>
+                        <td>GET</td>
+                        <td>Last optimization request sent to EOS</td>
+                    </tr>
+                    <tr>
+                        <td><code>/json/optimize_response.json</code></td>
+                        <td>GET</td>
+                        <td>Last optimization response from EOS</td>
+                    </tr>
+                    <tr>
+                        <td><code>/controls/mode_override</code></td>
+                        <td>POST</td>
+                        <td>Override system mode, duration, and grid charge power</td>
+                    </tr>
+                    <tr>
+                        <td><code>/logs</code></td>
+                        <td>GET</td>
+                        <td>Retrieve application logs with optional filtering</td>
+                    </tr>
+                    <tr>
+                        <td><code>/logs/alerts</code></td>
+                        <td>GET</td>
+                        <td>Retrieve warning and error logs for alert system</td>
+                    </tr>
+                    <tr>
+                        <td><code>/logs/clear</code></td>
+                        <td>POST</td>
+                        <td>Clear all stored logs from memory (file logs remain intact)</td>
+                    </tr>
+                    <tr>
+                        <td><code>/logs/alerts/clear</code></td>
+                        <td>POST</td>
+                        <td>Clear only alert logs from memory</td>
+                    </tr>
+                    <tr>
+                        <td><code>/logs/stats</code></td>
+                        <td>GET</td>
+                        <td>Get buffer usage statistics for log storage</td>
+                    </tr>
+                    <tr>
+                        <td><code>/api/update/status</code></td>
+                        <td>GET</td>
+                        <td>Get update notification status (Docker installations only)</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h3 id="api-examples">API Examples</h3>
+
+            <h4>Get Current Control States</h4>
+            <pre><code>curl http://localhost:8081/json/current_controls.json</code></pre>
+            
+            <p><strong>Response Example:</strong></p>
+            <pre><code>{
+  "current_states": {
+    "current_ac_charge_demand": 0,
+    "current_dc_charge_demand": 10000.0,
+    "current_discharge_allowed": true,
+    "inverter_mode": "MODE DISCHARGE ALLOWED",
+    "inverter_mode_num": 2,
+    "override_active": false,
+    "override_end_time": 0
+  },
+  "battery": {
+    "soc": 23.8,
+    "usable_capacity": 3867.11,
+    "max_charge_power_dyn": 10000,
+    "max_charge_power_fix": 10000,
+    "charging_curve_enabled": true,
+    "temperature": 25.4,
+    "max_grid_charge_rate": 10000,
+    "stored_energy": {
+      "stored_energy_price": 0.000215,
+      "duration_of_analysis": 96,
+      "charged_energy": 12450.5,
+      "charged_from_pv": 8500.0,
+      "charged_from_grid": 3950.5,
+      "ratio": 68.3,
+      "charging_sessions": [
+        {
+          "start_time": "2025-12-21T11:58:06+00:00",
+          "end_time": "2025-12-21T14:03:17+00:00",
+          "charged_energy": 772.9,
+          "charged_from_pv": 772.3,
+          "charged_from_grid": 0.6,
+          "ratio": 99.9,
+          "cost": 0.0002,
+          "is_inventory": true,
+          "inventory_energy": 772.9
+        }
+      ],
+      "last_update": "2025-12-22T10:15:00Z"
+    }
+  },
+  "localization": {
+    "currency": "EUR",
+    "currency_symbol": "€",
+    "currency_minor_unit": "ct"
+  },
+  "evcc": {
+    "charging_state": false,
+    "current_sessions": [...]
+  },
+  "state": {
+    "request_state": "response received",
+    "last_request_timestamp": "2024-11-14T22:28:56.678704+02:00",
+    "last_response_timestamp": "2024-11-14T22:30:01.194684+02:00",
+    "next_run": "2024-11-14T22:35:01.196502+02:00"
+  },
+  "used_optimization_source": "eos_server",
+  "used_time_frame_base": 3600,
+  "eos_connect_version": "0.2.01.138-develop",
+  "timestamp": "2024-06-01T12:00:00+02:00",
+  "api_version": "0.0.3"
+}</code></pre>
+
+            <div class="alert alert-info">
+                <strong><i class="fas fa-info-circle"></i> State Consistency:</strong> 
+                The <code>current_discharge_allowed</code> field reflects the <strong>final effective state</strong> after all overrides (EVCC modes, manual overrides) are applied.
+            </div>
+
+            <h4 id="field-reference">Response Field Reference</h4>
+            
+            <h5 id="current-states">current_states</h5>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Field</th>
+                        <th>Type</th>
+                        <th>Description</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>current_ac_charge_demand</code></td>
+                        <td>Integer (W)</td>
+                        <td>AC charge power demand from optimizer (after overrides)</td>
+                    </tr>
+                    <tr>
+                        <td><code>current_dc_charge_demand</code></td>
+                        <td>Float (W)</td>
+                        <td>DC charge power demand from optimizer (after overrides)</td>
+                    </tr>
+                    <tr>
+                        <td><code>current_discharge_allowed</code></td>
+                        <td>Boolean</td>
+                        <td>Whether battery discharge is allowed (final state after all overrides)</td>
+                    </tr>
+                    <tr>
+                        <td><code>inverter_mode</code></td>
+                        <td>String</td>
+                        <td>Current inverter mode as human-readable text</td>
+                    </tr>
+                    <tr>
+                        <td><code>inverter_mode_num</code></td>
+                        <td>Integer</td>
+                        <td>Current inverter mode as number (see mode table)</td>
+                    </tr>
+                    <tr>
+                        <td><code>override_active</code></td>
+                        <td>Boolean</td>
+                        <td>Whether manual mode override is currently active</td>
+                    </tr>
+                    <tr>
+                        <td><code>override_end_time</code></td>
+                        <td>Integer (timestamp)</td>
+                        <td>Unix timestamp when override ends (0 if not active)</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h5 id="battery-fields">battery</h5>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Field</th>
+                        <th>Type</th>
+                        <th>Description</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>soc</code></td>
+                        <td>Float (%)</td>
+                        <td>Battery state of charge percentage</td>
+                    </tr>
+                    <tr>
+                        <td><code>usable_capacity</code></td>
+                        <td>Float (Wh)</td>
+                        <td>Current usable battery capacity</td>
+                    </tr>
+                    <tr>
+                        <td><code>max_charge_power_dyn</code></td>
+                        <td>Integer (W)</td>
+                        <td>Dynamic maximum charge power (adjusted by temperature/SOC)</td>
+                    </tr>
+                    <tr>
+                        <td><code>max_charge_power_fix</code></td>
+                        <td>Integer (W)</td>
+                        <td>Fixed maximum charge power from configuration</td>
+                    </tr>
+                    <tr>
+                        <td><code>charging_curve_enabled</code></td>
+                        <td>Boolean</td>
+                        <td>Whether temperature-based charging curve is enabled</td>
+                    </tr>
+                    <tr>
+                        <td><code>temperature</code></td>
+                        <td>Float (°C)</td>
+                        <td>Current battery temperature (if available)</td>
+                    </tr>
+                    <tr>
+                        <td><code>max_grid_charge_rate</code></td>
+                        <td>Integer (W)</td>
+                        <td>Maximum allowed grid charge rate from configuration</td>
+                    </tr>
+                    <tr>
+                        <td><code>stored_energy</code></td>
+                        <td>Object</td>
+                        <td>Battery price analysis results (see stored_energy section below)</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h5 id="stored-energy">stored_energy (Battery Price Analysis)</h5>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Field</th>
+                        <th>Type</th>
+                        <th>Description</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>stored_energy_price</code></td>
+                        <td>Float (€/Wh)</td>
+                        <td>Calculated cost per Wh of energy currently in battery</td>
+                    </tr>
+                    <tr>
+                        <td><code>duration_of_analysis</code></td>
+                        <td>Integer (hours)</td>
+                        <td>How far back historical data was analyzed</td>
+                    </tr>
+                    <tr>
+                        <td><code>charged_energy</code></td>
+                        <td>Float (Wh)</td>
+                        <td>Total energy charged in analysis period</td>
+                    </tr>
+                    <tr>
+                        <td><code>charged_from_pv</code></td>
+                        <td>Float (Wh)</td>
+                        <td>Energy charged from solar PV</td>
+                    </tr>
+                    <tr>
+                        <td><code>charged_from_grid</code></td>
+                        <td>Float (Wh)</td>
+                        <td>Energy charged from grid</td>
+                    </tr>
+                    <tr>
+                        <td><code>ratio</code></td>
+                        <td>Float (%)</td>
+                        <td>Percentage of energy from PV vs grid</td>
+                    </tr>
+                    <tr>
+                        <td><code>charging_sessions</code></td>
+                        <td>Array</td>
+                        <td>Detailed list of charging sessions (see charging_sessions below)</td>
+                    </tr>
+                    <tr>
+                        <td><code>last_update</code></td>
+                        <td>ISO timestamp</td>
+                        <td>When this analysis was last updated</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h5 id="charging-sessions">charging_sessions (Individual Sessions)</h5>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Field</th>
+                        <th>Type</th>
+                        <th>Description</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>start_time</code></td>
+                        <td>ISO timestamp</td>
+                        <td>When this charging session started</td>
+                    </tr>
+                    <tr>
+                        <td><code>end_time</code></td>
+                        <td>ISO timestamp</td>
+                        <td>When this charging session ended</td>
+                    </tr>
+                    <tr>
+                        <td><code>charged_energy</code></td>
+                        <td>Float (Wh)</td>
+                        <td>Total energy charged in this session</td>
+                    </tr>
+                    <tr>
+                        <td><code>charged_from_pv</code></td>
+                        <td>Float (Wh)</td>
+                        <td>Energy from PV in this session</td>
+                    </tr>
+                    <tr>
+                        <td><code>charged_from_grid</code></td>
+                        <td>Float (Wh)</td>
+                        <td>Energy from grid in this session</td>
+                    </tr>
+                    <tr>
+                        <td><code>ratio</code></td>
+                        <td>Float (%)</td>
+                        <td>PV percentage for this session</td>
+                    </tr>
+                    <tr>
+                        <td><code>cost</code></td>
+                        <td>Float (€)</td>
+                        <td>Cost of grid energy in this session</td>
+                    </tr>
+                    <tr>
+                        <td><code>is_inventory</code></td>
+                        <td>Boolean</td>
+                        <td>Whether this session's energy is currently in the battery (LIFO model)</td>
+                    </tr>
+                    <tr>
+                        <td><code>inventory_energy</code></td>
+                        <td>Float (Wh)</td>
+                        <td>How much energy from this session is still in the battery</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h5>localization</h5>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Field</th>
+                        <th>Type</th>
+                        <th>Description</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>currency</code></td>
+                        <td>String</td>
+                        <td>Currency code (e.g., EUR, USD, DKK)</td>
+                    </tr>
+                    <tr>
+                        <td><code>currency_symbol</code></td>
+                        <td>String</td>
+                        <td>Currency symbol (e.g., €, $, kr)</td>
+                    </tr>
+                    <tr>
+                        <td><code>currency_minor_unit</code></td>
+                        <td>String</td>
+                        <td>Minor unit name (e.g., ct for cents, øre)</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h5>evcc</h5>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Field</th>
+                        <th>Type</th>
+                        <th>Description</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>charging_state</code></td>
+                        <td>Boolean</td>
+                        <td>Whether any EVCC charger is currently active</td>
+                    </tr>
+                    <tr>
+                        <td><code>charging_mode</code></td>
+                        <td>String</td>
+                        <td>Current EVCC charging mode (off, pv, minpv, now)</td>
+                    </tr>
+                    <tr>
+                        <td><code>current_sessions</code></td>
+                        <td>Array</td>
+                        <td>Detailed data for each configured EVCC charger (vehicle status, charging details, etc.)</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <div class="alert alert-info">
+                <strong><i class="fas fa-plug"></i> EVCC unreachable at startup:</strong>
+                If the EVCC API is down when EOS Connect starts, the service now keeps safe default charger data and keeps retrying instead of stopping the update loop. Once EVCC responds again, loadpoint and vehicle details resume automatically on the next poll.
+            </div>
+
+            <h5>inverter</h5>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Field</th>
+                        <th>Type</th>
+                        <th>Description</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>inverter_special_data</code></td>
+                        <td>Object / null</td>
+                        <td>Fronius-specific telemetry data (temperatures, fan speeds) - only available for Fronius Gen24 inverters</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h5>state (Optimization Scheduler)</h5>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Field</th>
+                        <th>Type</th>
+                        <th>Description</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>request_state</code></td>
+                        <td>String</td>
+                        <td>Current state of optimizer (e.g., "response received")</td>
+                    </tr>
+                    <tr>
+                        <td><code>last_request_timestamp</code></td>
+                        <td>ISO timestamp</td>
+                        <td>When the last optimization request was sent</td>
+                    </tr>
+                    <tr>
+                        <td><code>last_response_timestamp</code></td>
+                        <td>ISO timestamp</td>
+                        <td>When the last optimization response was received</td>
+                    </tr>
+                    <tr>
+                        <td><code>next_run</code></td>
+                        <td>ISO timestamp</td>
+                        <td>When the next optimization will run</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h5>Root Level Fields</h5>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Field</th>
+                        <th>Type</th>
+                        <th>Description</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>used_optimization_source</code></td>
+                        <td>String</td>
+                        <td>Which optimizer backend is being used (eos_server or evopt)</td>
+                    </tr>
+                    <tr>
+                        <td><code>used_time_frame_base</code></td>
+                        <td>Integer (seconds)</td>
+                        <td>Optimization cycle time frame (3600 = 1 hour, 900 = 15 min)</td>
+                    </tr>
+                    <tr>
+                        <td><code>eos_connect_version</code></td>
+                        <td>String</td>
+                        <td>EOS Connect software version</td>
+                    </tr>
+                    <tr>
+                        <td><code>timestamp</code></td>
+                        <td>ISO timestamp</td>
+                        <td>When this response was generated</td>
+                    </tr>
+                    <tr>
+                        <td><code>api_version</code></td>
+                        <td>String</td>
+                        <td>API version (current: 0.0.3)</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h4>Override System Mode</h4>
+            <pre><code>curl -X POST http://localhost:8081/controls/mode_override \
+  -H "Content-Type: application/json" \
+  -d '{
+    "mode": 1,
+    "duration": "02:00",
+    "grid_charge_power": 2.0
+  }'</code></pre>
+
+            <p><strong>Request Parameters:</strong></p>
+            <ul>
+                <li><code>mode</code> - Integer (see mode table below)</li>
+                <li><code>duration</code> - String, format "HH:MM"</li>
+                <li><code>grid_charge_power</code> - Float, kW (e.g., 2.0 for 2000 W)</li>
+            </ul>
+
+            <p><strong>Success Response:</strong></p>
+            <pre><code>{
+  "status": "success",
+  "message": "Mode override applied",
+  "applied_settings": {
+    "mode": 1,
+    "mode_name": "ChargeFromGrid",
+    "duration": "02:00",
+    "grid_charge_power": 2000,
+    "end_time": "2024-06-01T14:00:00+02:00"
+  }
+}</code></pre>
+
+            <h3 id="system-mode-ref">System Mode Reference</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Mode Name</th>
+                        <th>Mode Number</th>
+                        <th>Description</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Auto</td>
+                        <td>-2</td>
+                        <td>Fully automatic optimization (default mode)</td>
+                    </tr>
+                    <tr>
+                        <td>StartUp</td>
+                        <td>-1</td>
+                        <td>System startup state</td>
+                    </tr>
+                    <tr>
+                        <td>Charge from Grid</td>
+                        <td>0</td>
+                        <td>Force battery charging from the grid</td>
+                    </tr>
+                    <tr>
+                        <td>Avoid Discharge</td>
+                        <td>1</td>
+                        <td>Prevent battery discharge</td>
+                    </tr>
+                    <tr>
+                        <td>Discharge Allowed</td>
+                        <td>2</td>
+                        <td>Allow battery discharge</td>
+                    </tr>
+                    <tr>
+                        <td>Avoid Discharge EVCC FAST</td>
+                        <td>3</td>
+                        <td>Avoid discharge with EVCC fast charge</td>
+                    </tr>
+                    <tr>
+                        <td>Discharge Allowed EVCC PV</td>
+                        <td>4</td>
+                        <td>Allow discharge with EVCC PV mode</td>
+                    </tr>
+                    <tr>
+                        <td>Discharge Allowed EVCC MIN+PV</td>
+                        <td>5</td>
+                        <td>Allow discharge with EVCC MIN+PV mode</td>
+                    </tr>
+                    <tr>
+                        <td>Charge from Grid EVCC FAST</td>
+                        <td>6</td>
+                        <td>Grid charging during fast EV charge</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h3 id="logging-api">Logging API</h3>
+            <h4>Get Recent Logs</h4>
+            <pre><code># Get last 50 error logs
+curl "http://localhost:8081/logs?level=ERROR&limit=50"
+
+# Get logs since specific time
+curl "http://localhost:8081/logs?since=2024-06-01T11:00:00Z"</code></pre>
+
+            <p><strong>Query Parameters:</strong></p>
+            <ul>
+                <li><code>level</code> - Filter by log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)</li>
+                <li><code>limit</code> - Maximum number of records (default: 100)</li>
+                <li><code>since</code> - ISO timestamp to get logs since that time</li>
+            </ul>
+
+            <h4>Get System Alerts</h4>
+            <pre><code>curl http://localhost:8081/logs/alerts</code></pre>
+
+            <p><strong>Response Example:</strong></p>
+            <pre><code>{
+  "alerts": [...],
+  "grouped_alerts": {
+    "WARNING": [...],
+    "ERROR": [...],
+    "CRITICAL": [...]
+  },
+  "alert_counts": {
+    "WARNING": 1,
+    "ERROR": 0,
+    "CRITICAL": 0
+  }
+}</code></pre>
+
+            <h4>Get Log Buffer Statistics</h4>
+            <pre><code>curl http://localhost:8081/logs/stats</code></pre>
+
+            <p><strong>Response Example:</strong></p>
+            <pre><code>{
+  "buffer_stats": {
+    "main_buffer": {
+      "current_size": 3456,
+      "max_size": 5000,
+      "usage_percent": 69.1
+    },
+    "alert_buffer": {
+      "current_size": 23,
+      "max_size": 2000,
+      "usage_percent": 1.2
+    }
+  }
+}</code></pre>
+
+            <div class="alert alert-info">
+                <strong><i class="fas fa-database"></i> Memory Log System:</strong>
+                <ul>
+                    <li><strong>Main buffer:</strong> Stores last 5000 log entries (all levels)</li>
+                    <li><strong>Alert buffer:</strong> Stores last 2000 alerts (WARNING/ERROR/CRITICAL)</li>
+                    <li><strong>Persistent storage:</strong> File-based logs not affected by memory operations</li>
+                    <li><strong>Thread-safe:</strong> Safe for concurrent access from multiple clients</li>
+                </ul>
+            </div>
+
+            <h3>Update Status API (Docker Only)</h3>
+            <p>Docker image installations can check for available updates via the update status API. <strong>This endpoint is only active for Docker installations</strong> - Home Assistant Add-on users receive updates through the HA Supervisor.</p>
+
+            <h4>Get Update Status</h4>
+            <pre><code>curl http://localhost:8081/api/update/status</code></pre>
+
+            <p><strong>Response Example (Update Available):</strong></p>
+            <pre><code>{
+  "update_status": {
+    "enabled": true,
+    "is_ha_addon": false,
+    "current_version": "0.2.30",
+    "is_develop_branch": false,
+    "update_available": true,
+    "latest_version": "0.2.31",
+    "last_check_time": 1704729600.0,
+    "last_check_success": true,
+    "last_error": null,
+    "next_check_in_seconds": 39847
+  },
+  "timestamp": "2024-01-08T14:30:00+00:00",
+  "api_version": "0.0.1"
+}</code></pre>
+
+            <p><strong>Response Example (HA Add-on):</strong></p>
+            <pre><code>{
+  "update_status": {
+    "enabled": false,
+    "is_ha_addon": true,
+    "current_version": "0.2.30",
+    "is_develop_branch": false,
+    "update_available": false,
+    "latest_version": null,
+    "last_check_time": null,
+    "last_check_success": false,
+    "last_error": null,
+    "next_check_in_seconds": 0
+  },
+  "timestamp": "2024-01-08T14:30:00+00:00",
+  "api_version": "0.0.1"
+}</code></pre>
+
+            <h5>Response Fields</h5>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Field</th>
+                        <th>Type</th>
+                        <th>Description</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>enabled</code></td>
+                        <td>Boolean</td>
+                        <td>Whether update checking is active (<code>true</code> for Docker, <code>false</code> for HA)</td>
+                    </tr>
+                    <tr>
+                        <td><code>is_ha_addon</code></td>
+                        <td>Boolean</td>
+                        <td>Whether running as Home Assistant Add-on</td>
+                    </tr>
+                    <tr>
+                        <td><code>current_version</code></td>
+                        <td>String</td>
+                        <td>Currently installed EOS Connect version</td>
+                    </tr>
+                    <tr>
+                        <td><code>is_develop_branch</code></td>
+                        <td>Boolean</td>
+                        <td>Whether on develop branch (vs stable)</td>
+                    </tr>
+                    <tr>
+                        <td><code>update_available</code></td>
+                        <td>Boolean</td>
+                        <td>Whether a newer version is available(<code>false</code> always for HA)</td>
+                    </tr>
+                    <tr>
+                        <td><code>latest_version</code></td>
+                        <td>String</td>
+                        <td>Latest available version (null if not checked or no update)</td>
+                    </tr>
+                    <tr>
+                        <td><code>last_check_time</code></td>
+                        <td>Float</td>
+                        <td>Unix timestamp of last update check (null if never checked)</td>
+                    </tr>
+                    <tr>
+                        <td><code>last_check_success</code></td>
+                        <td>Boolean</td>
+                        <td>Whether last check succeeded</td>
+                    </tr>
+                    <tr>
+                        <td><code>last_error</code></td>
+                        <td>String</td>
+                        <td>Error message from last check (null if successful)</td>
+                    </tr>
+                    <tr>
+                        <td><code>next_check_in_seconds</code></td>
+                        <td>Integer</td>
+                        <td>Seconds until next automatic check (0 for HA or immediate check)</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <div class="alert alert-info">
+                <strong><i class="fas fa-clock"></i> Check Interval:</strong> Update checks run automatically every 12 hours (43200 seconds) for Docker installations. First check occurs 30 seconds after startup.
+            </div>
+
+            <div class="alert alert-warning">
+                <strong><i class="fas fa-exclamation-triangle"></i> Branch Detection:</strong> The system automatically detects stable (<code>0.2.30</code>) vs develop (<code>0.2.31.236-develop</code>) versions and only shows matching updates.
+            </div>
+        </div>
+
+        <!-- Sensor Auto-Detection Section -->
+        <div class="content-section" id="sensor-detection">
+            <h2><i class="fas fa-wand-magic-sparkles"></i> Sensor Auto-Detection</h2>
+            <p>EOS Connect automatically detects battery and grid sensor polarity using a lightweight energy balance validation. This ensures correct attribution of battery charging between PV and Grid — even if your sensors report inverted signs.</p>
+            <ul>
+                <li><strong>What it solves:</strong> Prevents PV attribution at night when PV≈0 by recognizing inverted grid import sensors</li>
+                <li><strong>How it works:</strong> Tests 4 sign combinations and selects the one that balances <em>PV + Grid + Battery = Load</em> across recent samples</li>
+                <li><strong>Performance:</strong> Uses ≤200 samples from the last 48h; detection typically runs in &lt;100 ms</li>
+            </ul>
+            <p><strong>Log Example:</strong></p>
+            <pre><code>[BATTERY-PRICE] Detected conventions: battery=negative_charging grid=negative_import (counts: 49,2,201,2 from 203 samples)</code></pre>
+            <div class="alert alert-info">
+                <strong><i class="fas fa-info-circle"></i> Note:</strong> Detection runs once per session and is cached until restart.
+            </div>
+        </div>
+
+        <!-- MQTT Section -->
+        <div class="content-section" id="mqtt">
+            <h2><i class="fas fa-satellite-dish"></i> MQTT Integration</h2>
+            <p>EOS Connect publishes real-time system data and control states to MQTT topics, and subscribes to control commands for remote system management.</p>
+
+            <h3>Configuration</h3>
+            <pre><code>mqtt:
+  enabled: true
+  broker: localhost
+  port: 1883
+  user: mqtt_user
+  password: mqtt_password
+  tls: false
+  ha_mqtt_auto_discovery: true
+  ha_mqtt_auto_discovery_prefix: homeassistant</code></pre>
+
+            <div class="alert alert-info">
+                <strong><i class="fas fa-info-circle"></i> Base Topic:</strong> All topics use <code>&lt;mqtt_configured_prefix&gt;/eos_connect/</code> (e.g., <code>myhome/eos_connect/</code>)
+            </div>
+
+            <h3 id="mqtt-published">Published Topics (Read System State)</h3>
+            <p>EOS Connect publishes comprehensive real-time data to these topics:</p>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>Topic Suffix</th>
+                        <th>Type</th>
+                        <th>Description</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td colspan="3" style="background-color: rgba(74, 158, 255, 0.1); font-weight: bold;"><i class="fas fa-cogs"></i> Optimization & Control</td>
+                    </tr>
+                    <tr>
+                        <td><code>optimization/state</code></td>
+                        <td>String</td>
+                        <td>Current optimization request state ("ok", "error")</td>
+                    </tr>
+                    <tr>
+                        <td><code>optimization/last_run</code></td>
+                        <td>ISO timestamp</td>
+                        <td>Timestamp of last optimization run</td>
+                    </tr>
+                    <tr>
+                        <td><code>optimization/next_run</code></td>
+                        <td>ISO timestamp</td>
+                        <td>Timestamp of next scheduled run</td>
+                    </tr>
+                    <tr>
+                        <td><code>control/overall_state</code></td>
+                        <td>Integer</td>
+                        <td>Current system mode (see mode table)</td>
+                    </tr>
+                    <tr>
+                        <td><code>control/override_active</code></td>
+                        <td>Boolean</td>
+                        <td>Whether manual override is active</td>
+                    </tr>
+                    <tr>
+                        <td><code>control/override_end_time</code></td>
+                        <td>ISO timestamp</td>
+                        <td>When override ends</td>
+                    </tr>
+                    <tr>
+                        <td><code>control/override_charge_power</code></td>
+                        <td>Integer (W)</td>
+                        <td>Override grid charge power</td>
+                    </tr>
+                    <tr>
+                        <td><code>control/eos_ac_charge_demand</code></td>
+                        <td>Integer (W)</td>
+                        <td>AC charge demand from optimizer</td>
+                    </tr>
+                    <tr>
+                        <td><code>control/eos_dc_charge_demand</code></td>
+                        <td>Integer (W)</td>
+                        <td>DC charge demand from optimizer</td>
+                    </tr>
+                    <tr>
+                        <td><code>control/eos_discharge_allowed</code></td>
+                        <td>Boolean</td>
+                        <td>Discharge allowed (final effective state after all overrides)</td>
+                    </tr>
+                    <tr>
+                        <td><code>control/eos_homeappliance_released</code></td>
+                        <td>Boolean</td>
+                        <td>Home appliance scheduling released</td>
+                    </tr>
+                    <tr>
+                        <td><code>control/eos_homeappliance_start_hour</code></td>
+                        <td>Integer (hour)</td>
+                        <td>Optimal home appliance start hour</td>
+                    </tr>
+                    <tr>
+                        <td colspan="3" style="background-color: rgba(74, 158, 255, 0.1); font-weight: bold;"><i class="fas fa-battery-three-quarters"></i> Battery Data</td>
+                    </tr>
+                    <tr>
+                        <td><code>battery/soc</code></td>
+                        <td>Float (%)</td>
+                        <td>Battery state of charge</td>
+                    </tr>
+                    <tr>
+                        <td><code>battery/remaining_energy</code></td>
+                        <td>Integer (Wh)</td>
+                        <td>Usable battery capacity</td>
+                    </tr>
+                    <tr>
+                        <td><code>battery/dyn_max_charge_power</code></td>
+                        <td>Integer (W)</td>
+                        <td>Dynamic maximum charge power</td>
+                    </tr>
+                    <tr>
+                        <td colspan="3" style="background-color: rgba(74, 158, 255, 0.1); font-weight: bold;"><i class="fas fa-microchip"></i> Inverter Data (Fronius Only)</td>
+                    </tr>
+                    <tr>
+                        <td><code>inverter/special/temperature_inverter</code></td>
+                        <td>Float (°C)</td>
+                        <td>Inverter ambient temperature</td>
+                    </tr>
+                    <tr>
+                        <td><code>inverter/special/temperature_ac_module</code></td>
+                        <td>Float (°C)</td>
+                        <td>AC module temperature</td>
+                    </tr>
+                    <tr>
+                        <td><code>inverter/special/temperature_dc_module</code></td>
+                        <td>Float (°C)</td>
+                        <td>DC module temperature</td>
+                    </tr>
+                    <tr>
+                        <td><code>inverter/special/temperature_battery_module</code></td>
+                        <td>Float (°C)</td>
+                        <td>Battery module temperature</td>
+                    </tr>
+                    <tr>
+                        <td><code>inverter/special/fan_control_01</code></td>
+                        <td>Integer</td>
+                        <td>Fan control 1 status</td>
+                    </tr>
+                    <tr>
+                        <td><code>inverter/special/fan_control_02</code></td>
+                        <td>Integer</td>
+                        <td>Fan control 2 status</td>
+                    </tr>
+                    <tr>
+                        <td colspan="3" style="background-color: rgba(74, 158, 255, 0.1); font-weight: bold;"><i class="fas fa-car"></i> EVCC Data (if configured)</td>
+                    </tr>
+                    <tr>
+                        <td><code>evcc/[name]/mode</code></td>
+                        <td>String</td>
+                        <td>EVCC charging mode (off, pv, minpv, now)</td>
+                    </tr>
+                    <tr>
+                        <td><code>evcc/[name]/connected</code></td>
+                        <td>Boolean</td>
+                        <td>Vehicle connection status</td>
+                    </tr>
+                    <tr>
+                        <td><code>evcc/[name]/charging</code></td>
+                        <td>Boolean</td>
+                        <td>Active charging status</td>
+                    </tr>
+                    <tr>
+                        <td colspan="3" style="background-color: rgba(74, 158, 255, 0.1); font-weight: bold;"><i class="fas fa-heartbeat"></i> System Status</td>
+                    </tr>
+                    <tr>
+                        <td><code>status</code></td>
+                        <td>String</td>
+                        <td>Always "online" when running</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <div class="alert alert-info">
+                <strong><i class="fas fa-info-circle"></i> State Consistency:</strong> 
+                The <code>control/eos_discharge_allowed</code> topic reflects the <strong>final effective state</strong> after combining optimizer output, EVCC overrides, and manual overrides. This ensures all outputs (MQTT, Web API, inverter commands) are consistent.
+            </div>
+
+            <h3 id="mqtt-subscribed">Subscribed Topics (Send Control Commands)</h3>
+            <p>Control EOS Connect by publishing messages to these topics:</p>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>Topic Suffix</th>
+                        <th>Expected Payload</th>
+                        <th>Description</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>control/overall_state/set</code></td>
+                        <td>Integer or String (see table)</td>
+                        <td>Change system mode</td>
+                    </tr>
+                    <tr>
+                        <td><code>control/override_remain_time/set</code></td>
+                        <td>String "HH:MM"</td>
+                        <td>Set override duration (e.g., "02:00")</td>
+                    </tr>
+                    <tr>
+                        <td><code>control/override_charge_power/set</code></td>
+                        <td>Integer (watts)</td>
+                        <td>Set grid charge power (e.g., 2000)</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h3 id="mqtt-mode-control">System Mode Control Reference</h3>
+            <p>When publishing to <code>control/overall_state/set</code>, use either mode name or number:</p>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>Mode Name</th>
+                        <th>Mode Number</th>
+                        <th>Description</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Auto</td>
+                        <td>-2</td>
+                        <td>Fully automatic optimization (default)</td>
+                    </tr>
+                    <tr>
+                        <td>Charge from Grid</td>
+                        <td>0</td>
+                        <td>Force battery charging from grid</td>
+                    </tr>
+                    <tr>
+                        <td>Avoid Discharge</td>
+                        <td>1</td>
+                        <td>Prevent battery discharge</td>
+                    </tr>
+                    <tr>
+                        <td>Discharge Allowed</td>
+                        <td>2</td>
+                        <td>Allow battery discharge</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <div class="alert alert-info">
+                <strong><i class="fas fa-info-circle"></i> EVCC Modes:</strong> 
+                Additional modes (3-6) exist for EVCC integration but are automatically set by the system. Manual selection via MQTT reverts to Auto (-2).
+            </div>
+
+            <h3 id="mqtt-examples">MQTT Command Examples</h3>
+
+            <h4>Set System to Automatic Mode</h4>
+            <pre><code>mosquitto_pub -t "myhome/eos_connect/control/overall_state/set" -m "Auto"
+# or
+mosquitto_pub -t "myhome/eos_connect/control/overall_state/set" -m "-2"</code></pre>
+
+            <h4>Force Grid Charging</h4>
+            <pre><code>mosquitto_pub -t "myhome/eos_connect/control/overall_state/set" -m "Charge from Grid"
+# or
+mosquitto_pub -t "myhome/eos_connect/control/overall_state/set" -m "0"</code></pre>
+
+            <h4>Set Override Duration to 1.5 Hours</h4>
+            <pre><code>mosquitto_pub -t "myhome/eos_connect/control/override_remain_time/set" -m "01:30"</code></pre>
+
+            <h4>Set Grid Charge Power to 1500W</h4>
+            <pre><code>mosquitto_pub -t "myhome/eos_connect/control/override_charge_power/set" -m "1500"</code></pre>
+
+            <h4>Monitor Battery SOC</h4>
+            <pre><code>mosquitto_sub -t "myhome/eos_connect/battery/soc"</code></pre>
+
+            <h3 id="mqtt-update-topics">Update Notification Topics (Docker Only)</h3>
+            <p>For Docker image installations, EOS Connect publishes update status to MQTT. These topics are <strong>not published for Home Assistant Add-on installations</strong> since updates are managed by the Supervisor.</p>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>Topic Suffix</th>
+                        <th>Type</th>
+                        <th>Description</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td colspan="3" style="background-color: rgba(74, 158, 255, 0.1); font-weight: bold;"><i class="fas fa-bell"></i> Update Status</td>
+                    </tr>
+                    <tr>
+                        <td><code>system/update_available</code></td>
+                        <td>Binary (ON/OFF)</td>
+                        <td>Whether an update is available</td>
+                    </tr>
+                    <tr>
+                        <td><code>system/current_version</code></td>
+                        <td>String</td>
+                        <td>Current EOS Connect version</td>
+                    </tr>
+                    <tr>
+                        <td><code>system/latest_version</code></td>
+                        <td>String</td>
+                        <td>Latest available version (empty if none)</td>
+                    </tr>
+                    <tr>
+                        <td><code>system/update_check_enabled</code></td>
+                        <td>Binary (ON/OFF)</td>
+                        <td>Whether update checking is enabled (ON for Docker, OFF for HA)</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h4>MQTT Update Automation Example</h4>
+            <p>Create a Home Assistant automation to notify when updates are available:</p>
+            <pre><code>automation:
+  - alias: "EOS Connect Update Notification"
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.eos_connect_update_available
+        to: 'on'
+    action:
+      - service: notify.mobile_app
+        data:
+          title: "EOS Connect Update Available"
+          message: >
+            New version {{ states('sensor.eos_connect_latest_version') }} 
+            is available (current: {{ states('sensor.eos_connect_current_version') }})
+          data:
+            url: https://github.com/Ohand/EOS_connect/pkgs/container/eos_connect</code></pre>
+
+            <div class="alert alert-info">
+                <strong><i class="fas fa-home"></i> Home Assistant Auto-Discovery:</strong> When MQTT auto-discovery is enabled, these topics appear as sensors in Home Assistant automatically:
+                <ul>
+                    <li><code>binary_sensor.eos_connect_update_available</code></li>
+                    <li><code>sensor.eos_connect_current_version</code></li>
+                    <li><code>sensor.eos_connect_latest_version</code></li>
+                    <li><code>binary_sensor.eos_connect_update_check_enabled</code></li>
+                </ul>
+            </div>
+
+            <h3>Home Assistant MQTT Auto Discovery</h3>
+            <p>When enabled (<code>ha_mqtt_auto_discovery: true</code>), EOS Connect automatically creates Home Assistant entities for all sensors and controls.</p>
+            
+            <div class="alert alert-info">
+                <strong><i class="fas fa-home"></i> Auto-Created Entities:</strong>
+                <ul>
+                    <li><code>sensor.eos_connect_battery_soc</code></li>
+                    <li><code>sensor.eos_connect_battery_remaining_energy</code></li>
+                    <li><code>sensor.eos_connect_optimization_state</code></li>
+                    <li><code>switch.eos_connect_discharge_allowed</code></li>
+                    <li>And many more...</li>
+                </ul>
+            </div>
+
+            <p>All entities are automatically organized under the <code>EOS Connect</code> device in Home Assistant.</p>
+        </div>
+
+        <!-- Integrations Section -->
+        <div class="content-section" id="integrations">
+            <h2><i class="fas fa-plug"></i> External Integrations</h2>
+
+            <h3>Home Assistant Integration</h3>
+            <h4>Add-on Installation</h4>
+            <ol>
+                <li>Add repository: <a href="https://github.com/ohAnd/ha_addons" target="_blank">ohAnd/ha_addons</a></li>
+                <li>Install EOS Connect add-on</li>
+                <li>Configure via add-on UI</li>
+                <li>Enable MQTT in config for auto-discovery</li>
+            </ol>
+
+            <h4>Using Sensors</h4>
+            <p>Configure sensor sources in config.yaml:</p>
+            <pre><code>battery:
+  source: homeassistant
+  url: http://homeassistant:8123
+  access_token: "your_long_lived_access_token"
+  soc_sensor: sensor.battery_soc</code></pre>
+
+            <h3>OpenHAB Integration</h3>
+            <pre><code>load:
+  source: openhab
+  url: http://openhab:8080
+  load_sensor: Load_Power
+
+battery:
+  source: openhab
+  url: http://openhab:8080
+  soc_sensor: Battery_SOC</code></pre>
+
+            <h3>EVCC Integration</h3>
+            <h4>As Data Source</h4>
+            <pre><code>evcc:
+  url: http://192.168.1.100:7070
+
+pv_forecast_source:
+  source: evcc  # Use EVCC's PV forecasts</code></pre>
+
+            <h4>As Control Target</h4>
+            <p>EOS Connect can monitor and control EVCC charging modes:</p>
+            <ul>
+                <li>PV-only charging</li>
+                <li>Min+PV mode</li>
+                <li>Fast charge</li>
+                <li>Off</li>
+            </ul>
+
+            <h3>Fronius Inverter Integration</h3>
+            <h4>Enhanced Interface (Recommended)</h4>
+            <pre><code>inverter:
+  type: fronius_gen24
+  address: 192.168.1.12
+  user: customer
+  password: your_password
+  max_grid_charge_rate: 5000
+  max_pv_charge_rate: 5000</code></pre>
+
+            <div class="alert alert-info">
+                <strong><i class="fas fa-lightbulb"></i> Auto Firmware Detection:</strong> The enhanced interface automatically detects your Fronius firmware version and uses the appropriate authentication method (MD5 or SHA256).
+            </div>
+
+            <h4>Legacy Interface</h4>
+            <p>Use <code>type: fronius_gen24_legacy</code> for corner cases or troubleshooting.</p>
+
+            <h3>EVCC External Battery Control</h3>
+            <p>Universal interface for all EVCC-supported inverters:</p>
+            <pre><code>inverter:
+  type: evcc
+  # Inverter controlled via EVCC's external battery API</code></pre>
+        </div>
+
+        <!-- Automation Examples -->
+        <div class="content-section" id="automation">
+            <h2><i class="fas fa-robot"></i> Automation Examples</h2>
+
+            <h3>Home Assistant Automations</h3>
+
+            <h4>Charge Battery During Cheap Hours</h4>
+            <pre><code>automation:
+  - alias: "Charge battery during low prices"
+    trigger:
+      - platform: numeric_state
+        entity_id: sensor.electricity_price
+        below: 0.15  # €0.15/kWh
+    condition:
+      - condition: numeric_state
+        entity_id: sensor.eos_connect_battery_soc
+        below: 80
+    action:
+      - service: mqtt.publish
+        data:
+          topic: "myhome/eos_connect/control/overall_state/set"
+          payload: "Charge from Grid"
+      - service: mqtt.publish
+        data:
+          topic: "myhome/eos_connect/control/override_remain_time/set"
+          payload: "02:00"</code></pre>
+
+            <h4>Stop Discharge During High Load</h4>
+            <pre><code>automation:
+  - alias: "Preserve battery during high consumption"
+    trigger:
+      - platform: numeric_state
+        entity_id: sensor.house_power
+        above: 5000  # 5 kW
+    action:
+      - service: mqtt.publish
+        data:
+          topic: "myhome/eos_connect/control/overall_state/set"
+          payload: "Avoid Discharge"</code></pre>
+
+            <h3>Node-RED Flows</h3>
+            <p>Use MQTT nodes to:</p>
+            <ul>
+                <li>Monitor EOS Connect status</li>
+                <li>Trigger controls based on external events</li>
+                <li>Create custom dashboards</li>
+                <li>Log data to databases</li>
+            </ul>
+
+            <h3>Python Automation Script</h3>
+            <pre><code>import requests
+import json
+
+# Get battery status
+response = requests.get('http://localhost:8081/api/battery')
+battery = response.json()
+
+# If SOC below 20% and prices are low, force charge
+if battery['soc'] < 0.20:
+    requests.post('http://localhost:8081/api/controls/mode',
+        json={'mode': 'ChargeFromGrid', 'duration_minutes': 120})</code></pre>
+        </div>
+
+        <!-- Advanced Configuration -->
+        <div class="content-section">
+            <h2><i class="fas fa-cog"></i> Advanced Configuration Tips</h2>
+
+            <h3>Dynamic Battery Price Calculation</h3>
+            <p>Enable for real cost tracking:</p>
+            <pre><code>battery:
+  price_calculation_enabled: true
+  price_update_interval: 900  # 15 minutes
+  price_history_lookback_hours: 96  # 4 days
+  battery_power_sensor: sensor.battery_power
+  pv_power_sensor: sensor.pv_power
+  grid_power_sensor: sensor.grid_power
+  price_sensor: sensor.electricity_price</code></pre>
+
+            <h3>Multiple PV Installations</h3>
+            <pre><code>pv_forecast:
+  - name: Main_Roof_South
+    azimuth: 180
+    tilt: 25
+    power: 5000
+  - name: Garage_East
+    azimuth: 90
+    tilt: 15
+    power: 2500
+  - name: Carport_West
+    azimuth: 270
+    tilt: 10
+    power: 3000</code></pre>
+
+            <h3>Solcast with Rate Limiting</h3>
+            <pre><code>pv_forecast_source:
+  source: solcast
+  api_key: "your_api_key"
+
+# EOS Connect auto-extends to 2.5h intervals for Solcast
+# to stay within 10 API calls/day limit</code></pre>
+
+            <h3>Temperature-Based Battery Protection</h3>
+            <pre><code>battery:
+  charging_curve_enabled: true
+  sensor_battery_temperature: sensor.byd_battery_temperature
+  # Automatic power reduction in extreme temperatures</code></pre>
+        </div>
+
+        <!-- Next Steps -->
+        <div class="content-section">
+            <h2><i class="fas fa-arrow-right"></i> Next Steps</h2>
+            <div class="feature-grid">
+                <div class="feature-item">
+                    <a href="../user-guide/configuration.html" class="btn-primary">Configuration →</a>
+                    <p>Detailed configuration for all features</p>
+                </div>
+                <div class="feature-item">
+                    <a href="../developer/index.html" class="btn-primary">Developer Guide →</a>
+                    <p>Architecture and contribution info</p>
+                </div>
+                <div class="feature-item">
+                    <a href="https://github.com/ohAnd/EOS_connect/discussions" class="btn-primary" target="_blank">Community →</a>
+                    <p>Ask questions and share ideas</p>
+                </div>
+            </div>
+        </div>
+            </main>
+        </div>
+    </div>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <p>EOS Connect Documentation | <a href="../index.html">Home</a> | <a href="https://github.com/ohAnd/EOS_connect">GitHub</a> | <a href="https://github.com/sponsors/ohAnd">Sponsor</a></p>
+    </footer>
+
+    <!-- Scroll spy for TOC -->
+    <script>
+        const sections = document.querySelectorAll('.content-section[id]');
+        const tocLinks = document.querySelectorAll('.toc-link');
+
+        function highlightTOC() {
+            let current = '';
+            sections.forEach(section => {
+                const sectionTop = section.offsetTop;
+                if (pageYOffset >= sectionTop - 100) {
+                    current = section.getAttribute('id');
+                }
+            });
+
+            tocLinks.forEach(link => {
+                link.classList.remove('active');
+                if (link.getAttribute('href') === '#' + current) {
+                    link.classList.add('active');
+                }
+            });
+        }
+
+        window.addEventListener('scroll', highlightTOC);
+        highlightTOC();
+    </script>
+
+    <!-- Back to Top Button -->
+    <button class="back-to-top" onclick="scrollToTop()" aria-label="Back to top">
+        <i class="fas fa-chevron-up"></i>
+    </button>
+
+    <script>
+function toggleMobileMenu() {
+    const menu = document.querySelector('.nav-menu');
+    menu.classList.toggle('mobile-active');
+}
+
+// Close mobile menu when clicking outside
+document.addEventListener('click', function(event) {
+    const menu = document.querySelector('.nav-menu');
+    const toggle = document.querySelector('.mobile-menu-toggle');
+    if (menu.classList.contains('mobile-active') && !menu.contains(event.target) && !toggle.contains(event.target)) {
+        menu.classList.remove('mobile-active');
+    }
+});
+    </script>
+
+    <script>
+// Back to top button functionality
+const backToTopButton = document.querySelector('.back-to-top');
+
+window.addEventListener('scroll', function() {
+    if (window.pageYOffset > 300) {
+        backToTopButton.classList.add('visible');
+    } else {
+        backToTopButton.classList.remove('visible');
+    }
+});
+
+function scrollToTop() {
+    window.scrollTo({
+        top: 0,
+        behavior: 'smooth'
+    });
+}
+    </script>
+</body>
+</html>

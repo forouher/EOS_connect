@@ -11,6 +11,145 @@ class BugReportManager {
     }
 
     /**
+     * Copy text to clipboard with iOS-compatible fallback methods
+     * This method tries synchronous methods first to maintain iOS user gesture context
+     * @param {string} text - Text to copy
+     * @returns {boolean} - Success status (synchronous)
+     */
+    copyTextToClipboardSync(text) {
+        console.log('[BugReport] Attempting clipboard copy...');
+        const isIOS = navigator.userAgent.match(/ipad|iphone/i);
+        
+        // For iOS: Try synchronous methods FIRST (execCommand)
+        // For non-iOS: Try Clipboard API first, then fallback
+        
+        if (isIOS) {
+            console.log('[BugReport] iOS detected - using textarea method first');
+            
+            // Method 1 (iOS): Textarea without readonly - most reliable on iOS
+            try {
+                const textArea = document.createElement('textarea');
+                textArea.value = text;
+                
+                // iOS-optimized styling
+                textArea.style.position = 'absolute';
+                textArea.style.left = '-9999px';
+                textArea.style.top = (window.pageYOffset || document.documentElement.scrollTop) + 'px';
+                textArea.style.fontSize = '12pt'; // Prevent zooming on iOS
+                textArea.style.border = '0';
+                textArea.style.padding = '0';
+                textArea.style.margin = '0';
+                textArea.style.width = '1px';
+                textArea.style.height = '1px';
+                
+                // Critical: NO readonly attribute on iOS!
+                textArea.contentEditable = 'true';
+                textArea.readOnly = false;
+                
+                document.body.appendChild(textArea);
+                
+                // iOS selection sequence
+                textArea.focus();
+                textArea.select();
+                textArea.setSelectionRange(0, text.length);
+                
+                const success = document.execCommand('copy');
+                document.body.removeChild(textArea);
+                
+                if (success) {
+                    console.log('[BugReport] ✓ iOS: Copied using textarea method');
+                    return true;
+                } else {
+                    console.warn('[BugReport] ✗ iOS: Textarea execCommand returned false');
+                }
+            } catch (error) {
+                console.warn('[BugReport] ✗ iOS: Textarea method failed:', error);
+            }
+            
+            // Method 2 (iOS): ContentEditable fallback
+            try {
+                const div = document.createElement('div');
+                div.contentEditable = 'true';
+                div.textContent = text;
+                
+                div.style.position = 'absolute';
+                div.style.left = '-9999px';
+                div.style.top = (window.pageYOffset || document.documentElement.scrollTop) + 'px';
+                div.style.fontSize = '12pt';
+                div.style.width = '1px';
+                div.style.height = '1px';
+                
+                document.body.appendChild(div);
+                div.focus();
+                
+                const range = document.createRange();
+                range.selectNodeContents(div);
+                const selection = window.getSelection();
+                selection.removeAllRanges();
+                selection.addRange(range);
+                
+                const success = document.execCommand('copy');
+                document.body.removeChild(div);
+                
+                if (success) {
+                    console.log('[BugReport] ✓ iOS: Copied using contentEditable method');
+                    return true;
+                } else {
+                    console.warn('[BugReport] ✗ iOS: ContentEditable execCommand returned false');
+                }
+            } catch (error) {
+                console.warn('[BugReport] ✗ iOS: ContentEditable method failed:', error);
+            }
+            
+        } else {
+            // Non-iOS: Try Clipboard API first (modern browsers)
+            console.log('[BugReport] Non-iOS device - trying Clipboard API');
+            
+            // Method 1 (Non-iOS): Modern Clipboard API
+            try {
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    // Trigger async but don't wait
+                    navigator.clipboard.writeText(text).then(() => {
+                        console.log('[BugReport] ✓ Copied using Clipboard API');
+                    }).catch(err => {
+                        console.warn('[BugReport] ✗ Clipboard API failed:', err);
+                    });
+                    // Return true optimistically for non-iOS
+                    return true;
+                }
+            } catch (error) {
+                console.warn('[BugReport] Clipboard API not available:', error);
+            }
+            
+            // Method 2 (Non-iOS): Textarea fallback
+            try {
+                const textArea = document.createElement('textarea');
+                textArea.value = text;
+                textArea.style.position = 'fixed';
+                textArea.style.top = '0';
+                textArea.style.left = '0';
+                textArea.style.opacity = '0';
+                
+                document.body.appendChild(textArea);
+                textArea.select();
+                
+                const success = document.execCommand('copy');
+                document.body.removeChild(textArea);
+                
+                if (success) {
+                    console.log('[BugReport] ✓ Copied using textarea fallback');
+                    return true;
+                }
+            } catch (error) {
+                console.warn('[BugReport] ✗ Textarea fallback failed:', error);
+            }
+        }
+
+        console.error('[BugReport] ✗ All clipboard methods failed');
+        return false;
+    }
+
+    /**
      * Show bug report popup with form
      */
     async showBugReportPopup() {
@@ -255,15 +394,17 @@ class BugReportManager {
         const titleInput = document.getElementById('bugTitle');
         const descriptionInput = document.getElementById('bugDescription');
         const generateUrlBtn = document.getElementById('generateUrlBtn');
+        const copyDataBtn = document.getElementById('copyDataBtn');
 
         function updateButtonState() {
             const isValid = titleInput.value.trim() !== '' && descriptionInput.value.trim() !== '';
 
-            // Update Copy button
-            const copyDataBtn = document.getElementById('copyDataBtn');
-            copyDataBtn.disabled = !isValid;
-            copyDataBtn.style.cursor = isValid ? 'pointer' : 'not-allowed';
-            copyDataBtn.style.opacity = isValid ? '1' : '0.6';
+            // Update Copy button (only if data is loaded)
+            if (bugReportManager.preloadedSystemData) {
+                copyDataBtn.disabled = !isValid;
+                copyDataBtn.style.cursor = isValid ? 'pointer' : 'not-allowed';
+                copyDataBtn.style.opacity = isValid ? '1' : '0.6';
+            }
 
             // Update URL button
             generateUrlBtn.disabled = !isValid;
@@ -276,9 +417,49 @@ class BugReportManager {
 
         // Focus on title field
         setTimeout(() => titleInput.focus(), 100);
+
+        // *** iOS FIX: Pre-load system data immediately so copy is instant ***
+        console.log('[BugReport] Pre-loading system data for iOS compatibility...');
+        this.preloadSystemData(copyDataBtn, updateButtonState);
     }
 
 
+
+    /**
+     * Pre-load system data in background for instant iOS clipboard copy
+     */
+    async preloadSystemData(copyDataBtn, updateButtonState) {
+        try {
+            console.log('[BugReport] Starting background data collection...');
+            
+            // Show loading on copy button
+            if (copyDataBtn) {
+                const originalHTML = copyDataBtn.innerHTML;
+                copyDataBtn.innerHTML = '<i class="fas fa-spinner fa-spin" style="margin-right: 6px;"></i>Loading Data...';
+                copyDataBtn.disabled = true;
+            }
+
+            // Collect all system data in background
+            this.preloadedSystemData = await this.collectSystemData();
+            console.log('[BugReport] ✓ System data pre-loaded and ready for instant copy');
+
+            // Update copy button to show ready state
+            if (copyDataBtn) {
+                copyDataBtn.innerHTML = '<i class="fas fa-copy" style="margin-right: 6px;"></i>Copy to Clipboard<div style="font-size: 0.8em; margin-top: 2px; color: #999;">System data</div>';
+                // Re-check form validation
+                if (updateButtonState) {
+                    updateButtonState();
+                }
+            }
+        } catch (error) {
+            console.error('[BugReport] Error pre-loading system data:', error);
+            // Reset button on error
+            if (copyDataBtn) {
+                copyDataBtn.innerHTML = '<i class="fas fa-copy" style="margin-right: 6px;"></i>Copy to Clipboard<div style="font-size: 0.8em; margin-top: 2px; color: #999;">System data</div>';
+                copyDataBtn.disabled = false;
+            }
+        }
+    }
 
     /**
      * Generate GitHub bug report using URL method (always works, no authentication)
@@ -1096,45 +1277,33 @@ class BugReportManager {
         const copyBtn = document.getElementById('copyDataBtn');
 
         try {
-            // Show loading state
-            copyBtn.innerHTML = '<i class="fas fa-spinner fa-spin" style="margin-right: 6px;"></i>Copying...';
-            copyBtn.disabled = true;
+            let systemData;
 
-            // Collect system data
-            console.log('[BugReport] Collecting system data for clipboard...');
-            const systemData = await this.collectSystemData();
+            // *** iOS FIX: Use preloaded data if available (instant, no async delay) ***
+            if (this.preloadedSystemData) {
+                console.log('[BugReport] Using pre-loaded system data for instant copy (iOS compatible)');
+                systemData = this.preloadedSystemData;
+                copyBtn.innerHTML = '<i class="fas fa-spinner fa-spin" style="margin-right: 6px;"></i>Copying...';
+                copyBtn.disabled = true;
+            } else {
+                // Fallback: collect data now (slower, may fail on iOS)
+                console.log('[BugReport] Collecting system data (no preload available)...');
+                copyBtn.innerHTML = '<i class="fas fa-spinner fa-spin" style="margin-right: 6px;"></i>Collecting...';
+                copyBtn.disabled = true;
+                systemData = await this.collectSystemData();
+                copyBtn.innerHTML = '<i class="fas fa-spinner fa-spin" style="margin-right: 6px;"></i>Copying...';
+            }
 
             // Generate markdown content based on selections
             const markdownContent = this.generateMarkdownFromSelections(systemData);
 
-            // Copy to clipboard with fallback
-            let success = false;
-            try {
-                if (navigator.clipboard && navigator.clipboard.writeText) {
-                    await navigator.clipboard.writeText(markdownContent);
-                    success = true;
-                } else {
-                    // Fallback for older browsers
-                    const textArea = document.createElement('textarea');
-                    textArea.value = markdownContent;
-                    document.body.appendChild(textArea);
-                    textArea.select();
-                    success = document.execCommand('copy');
-                    document.body.removeChild(textArea);
-                }
-            } catch (error) {
-                console.warn('[BugReport] Clipboard API failed, trying fallback:', error);
-                // Fallback method
-                const textArea = document.createElement('textarea');
-                textArea.value = markdownContent;
-                document.body.appendChild(textArea);
-                textArea.select();
-                success = document.execCommand('copy');
-                document.body.removeChild(textArea);
-            }
+            // Now copy synchronously (critical for iOS)
+            console.log('[BugReport] Attempting synchronous clipboard copy...');
+            
+            const success = this.copyTextToClipboardSync(markdownContent);
 
             if (!success) {
-                throw new Error('All clipboard methods failed');
+                throw new Error('Clipboard copy failed');
             }
 
             // Show success state
@@ -1342,9 +1511,19 @@ class BugReportManager {
         try {
             console.log(`[BugReport] Copying ${dataType} to clipboard...`);
 
-            // Collect system data if not already available
-            if (!this.cachedSystemData) {
-                this.cachedSystemData = await this.collectSystemData();
+            let systemData;
+            
+            // *** iOS FIX: Use preloaded data if available ***
+            if (this.preloadedSystemData) {
+                console.log('[BugReport] Using pre-loaded data for instant copy');
+                systemData = this.preloadedSystemData;
+            } else if (this.cachedSystemData) {
+                console.log('[BugReport] Using cached data');
+                systemData = this.cachedSystemData;
+            } else {
+                console.log('[BugReport] Collecting data (no cache available)...');
+                systemData = await this.collectSystemData();
+                this.cachedSystemData = systemData;
             }
 
             let markdown = '';
@@ -1352,19 +1531,19 @@ class BugReportManager {
             switch (dataType) {
                 case 'controls':
                     markdown = '### 🎛️ Current System Controls & States\n\n```json\n';
-                    markdown += JSON.stringify(this.cachedSystemData.currentControls || {}, null, 2);
+                    markdown += JSON.stringify(systemData.currentControls || {}, null, 2);
                     markdown += '\n```';
                     break;
 
                 case 'opt_request':
                     markdown = '### 📤 Last Optimization Request\n\n```json\n';
-                    markdown += JSON.stringify(this.cachedSystemData.optimizeRequest || {}, null, 2);
+                    markdown += JSON.stringify(systemData.optimizeRequest || {}, null, 2);
                     markdown += '\n```';
                     break;
 
                 case 'opt_response':
                     markdown = '### 📥 Last Optimization Response\n\n```json\n';
-                    markdown += JSON.stringify(this.cachedSystemData.optimizeResponse || {}, null, 2);
+                    markdown += JSON.stringify(systemData.optimizeResponse || {}, null, 2);
                     markdown += '\n```';
                     break;
 
@@ -1372,48 +1551,27 @@ class BugReportManager {
                     throw new Error(`Unknown data type: ${dataType}`);
             }
 
-            // Copy to clipboard with fallback
-            let success = false;
-            try {
-                if (navigator.clipboard && navigator.clipboard.writeText) {
-                    await navigator.clipboard.writeText(markdown);
-                    success = true;
-                } else {
-                    // Fallback for older browsers
-                    const textArea = document.createElement('textarea');
-                    textArea.value = markdown;
-                    document.body.appendChild(textArea);
-                    textArea.select();
-                    success = document.execCommand('copy');
-                    document.body.removeChild(textArea);
-                }
-            } catch (error) {
-                console.warn('[BugReport] Clipboard API failed, trying fallback:', error);
-                // Fallback method
-                const textArea = document.createElement('textarea');
-                textArea.value = markdown;
-                document.body.appendChild(textArea);
-                textArea.select();
-                success = document.execCommand('copy');
-                document.body.removeChild(textArea);
-            }
+            // Copy to clipboard synchronously (critical for iOS)
+            const success = this.copyTextToClipboardSync(markdown);
 
             if (!success) {
-                throw new Error('All clipboard methods failed');
+                throw new Error('Clipboard copy failed');
             }
 
             // Show visual feedback
             const button = event.target.closest('button');
-            const originalContent = button.innerHTML;
-            button.innerHTML = '<i class="fas fa-check"></i>';
-            button.style.borderColor = '#28a745';
-            button.style.color = '#28a745';
+            if (button) {
+                const originalContent = button.innerHTML;
+                button.innerHTML = '<i class="fas fa-check"></i>';
+                button.style.borderColor = '#28a745';
+                button.style.color = '#28a745';
 
-            setTimeout(() => {
-                button.innerHTML = originalContent;
-                button.style.borderColor = '';
-                button.style.color = '';
-            }, 1500);
+                setTimeout(() => {
+                    button.innerHTML = originalContent;
+                    button.style.borderColor = '';
+                    button.style.color = '';
+                }, 1500);
+            }
 
         } catch (error) {
             console.error(`[BugReport] Error copying ${dataType} to clipboard:`, error);

@@ -44,7 +44,7 @@ class EVOptBackend:
         """
         evopt_request, errors = self._transform_request_from_eos_to_evopt(eos_request)
         if errors:
-            logger.error("[EVopt] Request transformation errors: %s", errors)
+            logger.error("[OPT-EVopt] Request transformation errors: %s", errors)
         # Optionally, write transformed payload to json file for debugging
         debug_path = os.path.join(
             os.path.dirname(__file__),
@@ -58,11 +58,11 @@ class EVOptBackend:
             with open(debug_path, "w", encoding="utf-8") as fh:
                 json.dump(evopt_request, fh, indent=2, ensure_ascii=False)
         except OSError as e:
-            logger.warning("[EVopt] Could not write debug file: %s", e)
+            logger.warning("[OPT-EVopt] Could not write debug file: %s", e)
 
         request_url = self.base_url + "/optimize/charge-schedule"
         logger.info(
-            "[EVopt] Request optimization with: %s - and with timeout: %s",
+            "[OPT-EVopt] Request optimization with: %s - and with timeout: %s",
             request_url,
             timeout,
         )
@@ -77,7 +77,7 @@ class EVOptBackend:
             elapsed_time = end_time - start_time
             minutes, seconds = divmod(elapsed_time, 60)
             logger.info(
-                "[EVopt] Response retrieved successfully in %d min %.2f sec for current run",
+                "[OPT-EVopt] Response retrieved successfully in %d min %.2f sec for current run",
                 int(minutes),
                 seconds,
             )
@@ -95,6 +95,40 @@ class EVOptBackend:
             avg_runtime = sum(self.last_optimization_runtimes) / 5
             evopt_response = response.json()
 
+            # Guard: EVopt can return a 200 with an infeasible/error status in the payload.
+            try:
+                if isinstance(evopt_response, dict):
+                    resp_status = evopt_response.get("status") or evopt_response.get(
+                        "result", {}
+                    ).get("status")
+                    if (
+                        isinstance(resp_status, str)
+                        and resp_status.lower() == "infeasible"
+                    ):
+                        logger.warning(
+                            "[OPT-EVopt] Server returned infeasible result; "
+                            "returning safe EOS infeasible payload: %s",
+                            evopt_response,
+                        )
+                        infeasible_eos = {
+                            "status": "Infeasible",
+                            "objective_value": None,
+                            "limit_violations": evopt_response.get(
+                                "limit_violations", {}
+                            ),
+                            "batteries": [],
+                            "grid_import": [],
+                            "grid_export": [],
+                            "flow_direction": [],
+                            "grid_import_overshoot": [],
+                            "grid_export_overshoot": [],
+                        }
+                        return infeasible_eos, avg_runtime
+            except (KeyError, TypeError, AttributeError) as _err:
+                logger.debug(
+                    "[OPT-EVopt] Could not evaluate evopt_response status: %s", _err
+                )
+
             # Optionally, write transformed payload to json file for debugging
             debug_path = os.path.join(
                 os.path.dirname(__file__),
@@ -108,18 +142,18 @@ class EVOptBackend:
                 with open(debug_path, "w", encoding="utf-8") as fh:
                     json.dump(evopt_response, fh, indent=2, ensure_ascii=False)
             except OSError as e:
-                logger.warning("[EVopt] Could not write debug file: %s", e)
+                logger.warning("[OPT-EVopt] Could not write debug file: %s", e)
 
             eos_response = self._transform_response_from_evopt_to_eos(
-                evopt_response, evopt_request
+                evopt_response, evopt_request, eos_request
             )
             return eos_response, avg_runtime
         except requests.exceptions.Timeout:
-            logger.error("[EVopt] Request timed out after %s seconds", timeout)
+            logger.error("[OPT-EVopt] Request timed out after %s seconds", timeout)
             return {"error": "Request timed out - trying again with next run"}, None
         except requests.exceptions.ConnectionError as e:
             logger.error(
-                "[EVopt] Connection error - server not reachable at %s "
+                "[OPT-EVopt] Connection error - server not reachable at %s "
                 "will try again with next cycle - error: %s",
                 request_url,
                 str(e),
@@ -129,15 +163,15 @@ class EVOptBackend:
                 "will try again with next cycle"
             }, None
         except requests.exceptions.RequestException as e:
-            logger.error("[EVopt] Request failed: %s", e)
+            logger.error("[OPT-EVopt] Request failed: %s", e)
             if response is not None:
-                logger.error("[EVopt] Response status: %s", response.status_code)
+                logger.error("[OPT-EVopt] Response status: %s", response.status_code)
                 logger.debug(
-                    "[EVopt] ERROR - response of server is:\n%s",
+                    "[OPT-EVopt] ERROR - response of server is:\n%s",
                     response.text,
                 )
             logger.debug(
-                "[EVopt] ERROR - payload for the request was:\n%s",
+                "[OPT-EVopt] ERROR - payload for the request was:\n%s",
                 evopt_request,
             )
             return {"error": str(e)}, None
@@ -155,6 +189,12 @@ class EVOptBackend:
         price_series = ems.get("strompreis_euro_pro_wh", []) or []
         feed_series = ems.get("einspeiseverguetung_euro_pro_wh", []) or []
         load_series = ems.get("gesamtlast", []) or []
+        # price for energy currently stored in the accu (EUR/Wh) - be defensive
+        price_accu_wh_raw = ems.get("preis_euro_pro_wh_akku", 0.0)
+        try:
+            price_accu_wh = float(price_accu_wh_raw)
+        except (TypeError, ValueError):
+            price_accu_wh = 0.0
 
         now = datetime.now(self.time_zone)
         if self.time_frame_base == 900:
@@ -219,6 +259,35 @@ class EVOptBackend:
         s_max = batt_capacity_wh * (batt_max_pct / 100.0)
         s_initial = batt_capacity_wh * (batt_initial_pct / 100.0)
 
+        # Ensure initial SOC lies within configured bounds
+        try:
+            if s_max is not None and s_initial > s_max:
+                logger.warning(
+                    "[OPT-EVopt] initial_soc (%.2f Wh, %.2f%%) > s_max (%.2f Wh, %.2f%%); "
+                    "clamping to s_max",
+                    s_initial,
+                    batt_initial_pct,
+                    s_max,
+                    batt_max_pct,
+                )
+                s_initial = s_max
+            if s_min is not None and s_initial < s_min:
+                logger.warning(
+                    "[OPT-EVopt] initial_soc (%.2f Wh, %.2f%%) < s_min (%.2f Wh, %.2f%%); "
+                    "clamping to s_min",
+                    s_initial,
+                    batt_initial_pct,
+                    s_min,
+                    batt_min_pct,
+                )
+                s_initial = s_min
+        except (TypeError, ValueError):
+            # defensive: if any unexpected non-numeric types are present, leave values unchanged
+            logger.warning(
+                "[OPT-EVopt] Battery SOC values are not numeric. Please check 'pv_akku' "
+                "configuration; leaving SOC values unchanged."
+            )
+
         batteries = []
         if batt_capacity_wh > 0:
             batteries.append(
@@ -235,7 +304,7 @@ class EVOptBackend:
                     "c_min": 0.0,
                     "c_max": batt_c_max,
                     "d_max": batt_c_max,
-                    "p_a": 0.0,
+                    "p_a": price_accu_wh,
                 }
             )
 
@@ -276,7 +345,7 @@ class EVOptBackend:
 
         return evopt, errors
 
-    def _transform_response_from_evopt_to_eos(self, evcc_resp, evopt=None):
+    def _transform_response_from_evopt_to_eos(self, evcc_resp, evopt, eos_request=None):
         """
         Translate EVoptimizer response -> EOS-style optimize response.
 
@@ -355,7 +424,7 @@ class EVOptBackend:
         time_params = self._calculate_time_parameters()
 
         # Extract battery parameters from request
-        battery_params = self._extract_battery_parameters(evopt)
+        battery_params = self._extract_battery_parameters(evopt, eos_request)
 
         # Extract response data arrays
         response_arrays = self._extract_response_arrays(
@@ -431,7 +500,7 @@ class EVOptBackend:
             "pad_past": pad_past,
         }
 
-    def _extract_battery_parameters(self, evopt):
+    def _extract_battery_parameters(self, evopt, eos_request=None):
         """
         Extract battery parameters from EVopt request.
 
@@ -440,6 +509,7 @@ class EVOptBackend:
         """
         params = {
             "s_max": None,
+            "capacity_wh": None,
             "eta_c": 0.95,
             "eta_d": 0.95,
             "c_max": None,
@@ -484,6 +554,13 @@ class EVOptBackend:
             params["d_max"] = float(b0r.get("d_max", 0.0)) or None
         except (ValueError, TypeError):
             params["d_max"] = None
+
+        # Extract full capacity from EOS request if available
+        pv_akku = eos_request.get("pv_akku") or {}
+        try:
+            params["capacity_wh"] = float(pv_akku.get("capacity_wh", 0)) or None
+        except (ValueError, TypeError):
+            params["capacity_wh"] = None
 
         return params
 
@@ -710,8 +787,11 @@ class EVOptBackend:
             loss = ch * (1.0 - eta_c) + dch * (1.0 - eta_d)
             verluste_per_hour.append(loss)
 
-        # Calculate SOC percentage
-        akku_soc_pct = self._calculate_soc_percentage(soc_wh, battery_params["s_max"])
+        # Calculate SOC percentage using FULL CAPACITY, not s_max
+        akku_soc_pct = self._calculate_soc_percentage(
+            soc_wh,
+            battery_params["capacity_wh"],  # CHANGED from battery_params["s_max"]
+        )
 
         # Get household load from request
         last_wh = self._extract_household_load(evopt, grid_import, n)
@@ -733,9 +813,13 @@ class EVOptBackend:
             "EAuto_SoC_pro_Stunde": [],  # Placeholder
         }
 
-    def _calculate_soc_percentage(self, soc_wh, s_max):
+    def _calculate_soc_percentage(self, soc_wh, capacity_wh):
         """
-        Convert SOC from Wh to percentage.
+        Convert SOC from Wh to percentage based on full battery capacity.
+
+        Args:
+            soc_wh: List of SOC values in Wh
+            capacity_wh: Full battery capacity in Wh (NOT s_max)
 
         Returns:
             list of percentages or empty list
@@ -743,9 +827,10 @@ class EVOptBackend:
         if not soc_wh:
             return []
 
-        # Determine reference capacity
-        ref = s_max
+        # Use full battery capacity as reference
+        ref = capacity_wh
         if not ref:
+            # Fallback: use max value from soc_wh (legacy behavior)
             try:
                 ref = max([float(x) for x in soc_wh]) if soc_wh else None
             except (ValueError, TypeError):

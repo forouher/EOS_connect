@@ -30,6 +30,7 @@ class LoadInterface:
         config,
         time_frame_base,
         tz_name=None,  # Changed default to None
+        request_timeout=10,  # Default timeout for API requests
     ):
         self.src = config.get("source", "")
         self.url = config.get("url", "")
@@ -47,6 +48,7 @@ class LoadInterface:
         )
         self.time_frame_base = time_frame_base
         self.time_zone = None
+        self.request_timeout = request_timeout  # Store configurable timeout
 
         logger.debug("[LOAD-IF] Initializing LoadInterface with source: %s", self.src)
         logger.debug("[LOAD-IF] Using URL: %s", self.url)
@@ -144,12 +146,16 @@ class LoadInterface:
             )
 
     def __request_with_retries(
-        self, method, url, params=None, headers=None, timeout=10, item_label=""
+        self, method, url, params=None, headers=None, timeout=None, item_label=""
     ):
         """
         Perform an HTTP request with retries and exponential backoff.
         Returns the requests.Response on success, or None on final failure.
         """
+        # Use instance timeout if not explicitly provided
+        if timeout is None:
+            timeout = self.request_timeout
+
         attempt = 0
         while attempt < self.max_retries:
             attempt += 1
@@ -175,6 +181,20 @@ class LoadInterface:
                 time.sleep(sleep_seconds)
 
     # get load data from url persistance source
+    def fetch_historical_energy_data(self, entity_id, start_time, end_time):
+        """
+        Public wrapper to fetch historical energy data from the configured source.
+        """
+        if self.src == "homeassistant":
+            return self.__fetch_historical_energy_data_from_homeassistant(
+                entity_id, start_time, end_time
+            )
+        elif self.src == "openhab":
+            return self.__fetch_historical_energy_data_from_openhab(
+                entity_id, start_time, end_time
+            )
+        return []
+
     def __fetch_historical_energy_data_from_openhab(
         self, openhab_item, start_time, end_time
     ):
@@ -186,7 +206,7 @@ class LoadInterface:
         openhab_item_url = self.url + "/rest/persistence/items/" + openhab_item
         params = {"starttime": start_time.isoformat(), "endtime": end_time.isoformat()}
         response = self.__request_with_retries(
-            "get", openhab_item_url, params=params, timeout=10, item_label=openhab_item
+            "get", openhab_item_url, params=params, item_label=openhab_item
         )
         if response is None:
             # Do not log error here; already logged in __request_with_retries
@@ -231,7 +251,7 @@ class LoadInterface:
         url = f"{self.url}/api/history/period/{start_time.isoformat()}"
         params = {"filter_entity_id": entity_id, "end_time": end_time.isoformat()}
         response = self.__request_with_retries(
-            "get", url, params=params, headers=headers, timeout=10, item_label=entity_id
+            "get", url, params=params, headers=headers, item_label=entity_id
         )
         if response is None:
             # Do not log error here; already logged in __request_with_retries
@@ -247,6 +267,78 @@ class LoadInterface:
                 for sublist in historical_data
                 for entry in sublist
             ]
+
+            # if device_class is energy, convert to power
+            if (
+                filtered_data
+                and "attributes" in filtered_data[0]
+                and "device_class" in filtered_data[0]["attributes"]
+            ):
+                device_class = filtered_data[0]["attributes"]["device_class"]
+                if device_class == "power":
+                    pass
+                elif device_class == "energy":
+
+                    # convert energy (Wh) to power (W) over the time frame
+                    # 1. find the first entry with valid data
+                    # 2. find the last entry with valid data
+                    # 3. take the delta & compute W from Wh.
+                    # 4. overwrite the orginal data structure.
+                    start_idx = 0
+                    end_idx = len(filtered_data) - 1
+                    while start_idx < end_idx:
+                        try:
+                            float(filtered_data[start_idx]["state"])
+                            break
+                        except ValueError:
+                            start_idx += 1
+                    while start_idx < end_idx:
+                        try:
+                            float(filtered_data[end_idx]["state"])
+                            break
+                        except ValueError:
+                            end_idx -= 1
+                    first_state = float(filtered_data[start_idx]["state"])
+                    last_state = float(filtered_data[end_idx]["state"])
+                    first_time = datetime.fromisoformat(
+                        filtered_data[start_idx]["last_updated"]
+                    )
+                    last_time = datetime.fromisoformat(
+                        filtered_data[end_idx]["last_updated"]
+                    )
+                    duration_hours = (last_time - first_time).total_seconds() / 3600.0
+
+                    filtered_data_new = []
+                    if duration_hours > 0:
+                        power_w = (last_state - first_state) / duration_hours
+                        power_w = max(
+                            0, power_w
+                        )  # Prevent negative from counter resets
+                        filtered_data[start_idx]["state"] = power_w
+                        filtered_data[end_idx]["state"] = power_w
+                        filtered_data_new.append(filtered_data[start_idx])
+                        filtered_data_new.append(filtered_data[end_idx])
+                        logger.debug(
+                            "[LOAD-IF] HOMEASSISTANT - Converted energy to power for '%s': "
+                            "%.1f Wh over %.2f hours = %.1f W",
+                            entity_id,
+                            last_state - first_state,
+                            duration_hours,
+                            power_w,
+                        )
+                    else:
+                        filtered_data[start_idx]["state"] = 0.0
+                        filtered_data[end_idx]["state"] = 0.0
+                        filtered_data_new.append(filtered_data[start_idx])
+                        filtered_data_new.append(filtered_data[end_idx])
+                        logger.debug(
+                            "[LOAD-IF] HOMEASSISTANT - Duration is zero for energy to"
+                            + " power conversion for '%s', assuming 0W",
+                            entity_id,
+                        )
+
+                    filtered_data = filtered_data_new
+
             # check if the data are delivered with unit kW and convert to W
             if (
                 filtered_data
@@ -363,7 +455,8 @@ class LoadInterface:
         if len(data["data"]) > 0 and total_duration > 0:
             # Get the timestamp of the last sample
             last_sample_time = datetime.fromisoformat(data["data"][-1]["last_updated"])
-            # The interval end is the latest timestamp in the interval (should be provided externally)
+            # The interval end is the latest timestamp in the interval
+            # (should be provided externally)
             # If not available, assume the interval is 1 hour after the first sample
             interval_end = None
             if "interval_end" in data:
@@ -539,6 +632,9 @@ class LoadInterface:
                 car_load_energy_wh + add_load_data_1_energy_wh
             )
 
+            # Save original household sensor value before potential modification
+            original_household_energy_wh = energy_wh
+
             if sum_controlable_energy_load_wh <= energy_wh:
                 energy_wh = energy_wh - sum_controlable_energy_load_wh
             else:
@@ -557,12 +653,15 @@ class LoadInterface:
                         + " )"
                     )
                 logger.warning(
-                    "[LOAD-IF] DATA ERROR load smaller than car load "
-                    + "- Energy for %s: %5.1f Wh (sum add energy %5.1f Wh - car load: %5.1f Wh) %s",
+                    "[LOAD-IF] DATA ERROR household load smaller than controllables (excess: %5.1f Wh) - Energy for %s - household: %5.1f Wh | car: %5.1f Wh + additional: %5.1f Wh | car+add: %5.1f Wh %s",
+                    round(
+                        sum_controlable_energy_load_wh - original_household_energy_wh, 1
+                    ),
                     current_time_slot,
-                    round(energy_wh, 1),
+                    round(original_household_energy_wh, 1),
+                    round(car_load_energy_wh, 1),
+                    round(add_load_data_1_energy_wh, 1),
                     round(sum_controlable_energy_load_wh, 1),
-                    round(car_load_energy, 1),
                     debug_url,
                 )
             if energy_wh == 0:
@@ -579,22 +678,37 @@ class LoadInterface:
                     + " )"
                 )
                 logger.debug(
-                    "[LOAD-IF] load = 0 ... Energy for %s: %5.1f Wh"
-                    + " (sum add energy %5.1f Wh - car load: %5.1f Wh - debug: %s)",
+                    "[LOAD-IF] load = 0 ... DATA ERROR household load smaller than controllables (excess: %5.1f Wh) - Energy for %s - household: %5.1f Wh | car: %5.1f Wh + additional: %5.1f Wh | car+add: %5.1f Wh - debug: %s",
+                    round(
+                        sum_controlable_energy_load_wh - original_household_energy_wh, 1
+                    ),
                     current_time_slot,
-                    round(energy_wh, 1),
+                    round(original_household_energy_wh, 1),
+                    round(car_load_energy_wh, 1),
+                    round(add_load_data_1_energy_wh, 1),
                     round(sum_controlable_energy_load_wh, 1),
-                    round(car_load_energy, 1),
                     debug_url,
                 )
 
+            # Sanity check: filter out implausible values
+            if energy_wh < 0 or energy_wh > 100000:
+                logger.info(
+                    "[LOAD-IF] Outlier detected in load profile: %s Wh at %s."
+                    + " Value replaced with 0.",
+                    energy_wh,
+                    current_time_slot,
+                )
+                energy_wh = 0
+
             load_profile.append(energy_wh)
             logger.debug(
-                "[LOAD-IF] Energy for %s: %5.1f Wh (sum add energy %5.1f Wh - car load: %5.1f Wh)",
+                "[LOAD-IF] Energy for %s - final: %5.1f Wh (household: %5.1f Wh | car: %5.1f Wh + additional: %5.1f Wh | car+add: %5.1f Wh)",
                 current_time_slot,
                 round(energy_wh, 1),
+                round(original_household_energy_wh, 1),
+                round(car_load_energy_wh, 1),
+                round(add_load_data_1_energy_wh, 1),
                 round(sum_controlable_energy_load_wh, 1),
-                round(car_load_energy, 1),
             )
             current_time_slot += timedelta(seconds=self.time_frame_base)
         if not load_profile:

@@ -118,22 +118,51 @@ class DataManager {
     }
 
     /**
+     * Fetch price metadata (forecast state and transition point)
+     */
+    async fetchPriceInfo() {
+        try {
+            const response = await fetch('json/price_info.json?nocache=' + Date.now());
+            if (!response.ok) {
+                return {
+                    forecast_start_index: null,
+                    forecast_type: "all_real",
+                    forecast_source: null,
+                    timestamp: new Date().toISOString(),
+                    api_version: "0.0.1"
+                };
+            }
+            return await response.json();
+        } catch (error) {
+            return {
+                forecast_start_index: null,
+                forecast_type: "all_real",
+                forecast_source: null,
+                timestamp: new Date().toISOString(),
+                api_version: "0.0.1"
+            };
+        }
+    }
+
+    /**
      * Fetch all data needed for initialization
      * Returns both request and response data
      */
     async fetchAllData(isTestMode = false, testScenario = null) {
         // testScenario != 'LIVE' ? console.log("[DataManager] Fetching all data in TEST mode") : null;
         try {
-            const [requestData, responseData, controlsData] = await Promise.all([
+            const [requestData, responseData, controlsData, priceInfo] = await Promise.all([
                 this.fetchOptimizationRequest(isTestMode),
                 this.fetchOptimizationResponse(isTestMode),
-                this.fetchCurrentControls(testScenario)
+                this.fetchCurrentControls(testScenario),
+                this.fetchPriceInfo()
             ]);
 
             return {
                 request: requestData,
                 response: responseData,
-                controls: controlsData
+                controls: controlsData,
+                priceInfo: priceInfo
             };
         } catch (error) {
             console.error("[DataManager] Error fetching all data:", error);
@@ -176,9 +205,34 @@ class DataManager {
                 };
             }
         } else if (responseData && responseData["status"]) {
+            const status = String(responseData["status"] || "").toLowerCase();
+
+            // Special handling for EVopt "Infeasible" payloads
+            if (status === "infeasible") {
+                let messageParts = [];
+
+                if (responseData["message"]) {
+                    messageParts.push(responseData["message"]);
+                }
+
+                const lv = responseData["limit_violations"] || {};
+                const lv_parts = [];
+                if (lv.grid_import_limit_exceeded) lv_parts.push("grid import limit exceeded");
+                if (lv.grid_export_limit_hit) lv_parts.push("grid export limit hit");
+                if (lv_parts.length) messageParts.push("Limit violations: " + lv_parts.join(", "));
+
+                // Helpful hint for common cause (initial SOC > configured max)
+                messageParts.push("Hint: check battery initial SOC vs configured max_soc_percentage (initial SOC reported may exceed configured limit).");
+
+                return {
+                    title: "Optimization infeasible",
+                    message: messageParts.join(" ")
+                };
+            }
+
             return {
                 title: responseData["status"],
-                message: responseData["message"]
+                message: responseData["message"] || ""
             };
         } else {
             return {

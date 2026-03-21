@@ -19,14 +19,16 @@ from constants import CURRENCY_SYMBOL_MAP, CURRENCY_MINOR_UNIT_MAP
 from interfaces.base_control import BaseControl
 from interfaces.load_interface import LoadInterface
 from interfaces.battery_interface import BatteryInterface
-from interfaces.inverter_fronius import FroniusWR
-from interfaces.inverter_fronius_v2 import FroniusWRV2
 from interfaces.evcc_interface import EvccInterface
 from interfaces.optimization_interface import OptimizationInterface
 from interfaces.price_interface import PriceInterface
 from interfaces.mqtt_interface import MqttInterface
 from interfaces.pv_interface import PvInterface
 from interfaces.port_interface import PortInterface
+from interfaces.update_checker import UpdateChecker
+from interfaces.inverters import create_inverter
+from interfaces.inverters.null_inverter import NullInverter
+from interfaces.inverters.evcc_inverter import EvccInverter
 
 # Check Python version early
 if sys.version_info < (3, 11):
@@ -116,7 +118,7 @@ timezone_formatter = TimezoneFormatter(
 streamhandler.setFormatter(timezone_formatter)
 
 memory_handler = MemoryLogHandler(
-    max_records=10000,  # All log entries (mixed levels)
+    max_records=50000,  # All log entries (mixed levels)
     max_alerts=2000,  # Dedicated alert buffer (WARNING/ERROR/CRITICAL only)
 )
 memory_handler.setFormatter(timezone_formatter)  # Use timezone formatter for web logs
@@ -140,56 +142,13 @@ base_control = BaseControl(config_manager.config, time_zone, time_frame_base)
 # initialize the inverter interface
 inverter_interface = None
 
-# Handle backward compatibility for old interface names
-inverter_type = config_manager.config["inverter"]["type"]
-if inverter_type == "fronius_gen24_v2":
-    logger.warning(
-        "[Config] Interface name 'fronius_gen24_v2' is deprecated. "
-        "Please update your config.yaml to use 'fronius_gen24' instead. "
-        "Using enhanced interface for compatibility."
-    )
-    inverter_type = "fronius_gen24"  # Auto-migrate to new name
-
-if inverter_type == "fronius_gen24":
-    # Enhanced V2 interface (default for existing users)
-    logger.info(
-        "[Inverter] Using enhanced Fronius GEN24 interface with firmware-based authentication"
-    )
-    inverter_config = {
-        "address": config_manager.config["inverter"]["address"],
-        "max_grid_charge_rate": config_manager.config["inverter"][
-            "max_grid_charge_rate"
-        ],
-        "max_pv_charge_rate": config_manager.config["inverter"]["max_pv_charge_rate"],
-        "user": config_manager.config["inverter"]["user"],
-        "password": config_manager.config["inverter"]["password"],
-    }
-    inverter_interface = FroniusWRV2(inverter_config)
-elif inverter_type == "fronius_gen24_legacy":
-    # Legacy V1 interface (for corner cases)
-    logger.info(
-        "[Inverter] Using legacy Fronius GEN24 interface (V1) for compatibility"
-    )
-    inverter_config = {
-        "address": config_manager.config["inverter"]["address"],
-        "max_grid_charge_rate": config_manager.config["inverter"][
-            "max_grid_charge_rate"
-        ],
-        "max_pv_charge_rate": config_manager.config["inverter"]["max_pv_charge_rate"],
-        "user": config_manager.config["inverter"]["user"],
-        "password": config_manager.config["inverter"]["password"],
-    }
-    inverter_interface = FroniusWR(inverter_config)
-elif inverter_type == "evcc":
-    logger.info(
-        "[Inverter] Inverter type %s - using the universal evcc external battery control.",
-        inverter_type,
-    )
+# Call factory via config dict
+inverter_interface = create_inverter(config_manager.config["inverter"])
+if inverter_interface is not None:
+    inverter_interface.initialize()
 else:
-    logger.info(
-        "[Inverter] Inverter type %s - no external connection."
-        + " Changing to show only mode.",
-        config_manager.config["inverter"]["type"],
+    logger.error(
+        "[Main] Failed to initialize inverter interface - check inverter configuration"
     )
 
 
@@ -338,11 +297,16 @@ load_interface = LoadInterface(
     config_manager.config.get("load", {}),
     time_frame_base,
     time_zone,
+    request_timeout=config_manager.config.get("request_timeout", 10),
 )
 
 battery_interface = BatteryInterface(
     config_manager.config["battery"],
     on_bat_max_changed=None,
+    load_interface=load_interface,
+    timezone=time_zone,
+    base_control=base_control,
+    request_timeout=config_manager.config.get("request_timeout", 10),
 )
 
 price_interface = PriceInterface(
@@ -354,6 +318,11 @@ pv_interface = PvInterface(
     config_manager.config["pv_forecast"],
     time_frame_base,
     config_manager.config.get("evcc", {}),
+    (
+        True
+        if config_manager.config["eos"].get("source", "eos_server") == "eos_server"
+        else False
+    ),
     config_manager.config.get("time_zone", "UTC"),
 )
 
@@ -361,6 +330,47 @@ pv_interface = PvInterface(
 init_time = 3 + 1 * len(config_manager.config["pv_forecast"])
 logger.info("[Main] Waiting %s seconds for interfaces to initialize", init_time)
 time.sleep(init_time)
+
+# Perform initial battery price calculation if enabled (blocking, synchronous)
+# This ensures the first optimization run has the correct battery price
+battery_interface.perform_initial_price_calculation()
+
+
+# Callback for update status changes (publishes to MQTT)
+def on_update_status_change(status):
+    """Called when update status changes (update becomes available or unavailable)."""
+    try:
+        mqtt_interface.update_publish_topics(
+            {
+                "system/update_available": {
+                    "value": str(status["update_available"]).lower()
+                },
+                "system/current_version": {"value": status["current_version"]},
+                "system/latest_version": {"value": status.get("latest_version") or ""},
+                "system/update_check_enabled": {
+                    "value": str(status["enabled"]).lower()
+                },
+            }
+        )
+        logger.info("[UPDATE-CHECK] Published status change to MQTT")
+    except (KeyError, TypeError, ValueError) as e:
+        logger.error("[UPDATE-CHECK] Error publishing to MQTT: %s", e)
+
+
+# Initialize update checker (checks for Docker image updates)
+# Automatically disabled for Home Assistant Add-on users
+update_checker = UpdateChecker(
+    current_version=__version__,
+    check_interval=43200,
+    on_status_change=on_update_status_change,
+)
+
+# Publish initial update status to MQTT
+try:
+    initial_status = update_checker.get_update_status()
+    on_update_status_change(initial_status)
+except (KeyError, TypeError, ValueError) as e:
+    logger.error("[UPDATE-CHECK] Error publishing initial status to MQTT: %s", e)
 
 # pv_interface.test_output()
 # sys.exit(0)  # exit if the interfaces are not initialized correctly
@@ -493,13 +503,39 @@ def create_optimize_request():
             "pv_prognose_wh": pv_prognose_wh,
             "strompreis_euro_pro_wh": strompreis_euro_pro_wh,
             "einspeiseverguetung_euro_pro_wh": einspeiseverguetung_euro_pro_wh,
-            "preis_euro_pro_wh_akku": config_manager.config["battery"][
-                "price_euro_per_wh_accu"
-            ],
+            "preis_euro_pro_wh_akku": battery_interface.get_price_euro_per_wh(),
             "gesamtlast": gesamtlast,
         }
 
     def get_pv_akku_data():
+        # Use dynamic max charge power if charging curve is enabled, otherwise use fixed value
+        # This ensures EVopt receives realistic charging limits based on current SOC
+        current_dynamic_max = battery_interface.get_max_charge_power()
+        max_charge_power = (
+            current_dynamic_max
+            if config_manager.config["battery"].get("charging_curve_enabled", True)
+            else config_manager.config["battery"]["max_charge_power_w"]
+        )
+
+        # Debug logging for charge demand tracking
+        is_dynamic = config_manager.config["battery"].get(
+            "charging_curve_enabled", True
+        )
+        logger.info(
+            "[CHARGE_DEMAND] Optimizer request preparation: max_charge_power=%s W "
+            "(source=%s, dynamic_max=%s, config_fixed=%s, charging_curve_enabled=%s)",
+            max_charge_power,
+            "dynamic" if is_dynamic else "fixed",
+            current_dynamic_max,
+            config_manager.config["battery"]["max_charge_power_w"],
+            is_dynamic,
+        )
+
+        # Store this value in base_control so it can use the same value when
+        # converting relative charge demands back to absolute values
+        # This prevents sawtooth patterns caused by mismatched max_charge_power values
+        base_control.optimization_max_charge_power_w = max_charge_power
+
         akku_object = {
             "capacity_wh": config_manager.config["battery"]["capacity_wh"],
             "charging_efficiency": config_manager.config["battery"][
@@ -508,9 +544,7 @@ def create_optimize_request():
             "discharging_efficiency": config_manager.config["battery"][
                 "discharge_efficiency"
             ],
-            "max_charge_power_w": config_manager.config["battery"][
-                "max_charge_power_w"
-            ],
+            "max_charge_power_w": max_charge_power,
             "initial_soc_percentage": round(battery_interface.get_current_soc()),
             "min_soc_percentage": battery_interface.get_min_soc(),
             "max_soc_percentage": battery_interface.get_max_soc(),
@@ -638,24 +672,33 @@ def setting_control_data(ac_charge_demand_rel, dc_charge_demand_rel, discharge_a
     base_control.set_current_ac_charge_demand(ac_charge_demand_rel)
     base_control.set_current_dc_charge_demand(dc_charge_demand_rel)
     base_control.set_current_discharge_allowed(bool(discharge_allowed))
-    mqtt_interface.update_publish_topics(
-        {
-            "control/eos_ac_charge_demand": {
-                "value": base_control.get_current_ac_charge_demand()
-            },
-            "control/eos_dc_charge_demand": {
-                "value": base_control.get_current_dc_charge_demand()
-            },
-            "control/eos_discharge_allowed": {
-                "value": base_control.get_current_discharge_allowed()
-            },
-        }
+
+    # Set the dynamic override discharge allowed active flag from latest optimization data
+    dyn_override_active = eos_interface.get_last_control_data()[0].get(
+        "dyn_override_active", False
     )
+    base_control.set_dyn_override_discharge_allowed_active(dyn_override_active)
+
     # set the current battery state of charge
     base_control.set_current_battery_soc(battery_interface.get_current_soc())
     # getting the current charging state from evcc
     base_control.set_current_evcc_charging_state(evcc_interface.get_charging_state())
     base_control.set_current_evcc_charging_mode(evcc_interface.get_charging_mode())
+
+    # Publish MQTT after all states are set to reflect the final combined state
+    ac_power_for_mqtt = base_control.get_needed_ac_charge_power()
+    # Only log MQTT publish on change (logging happens in get_needed_ac_charge_power)
+    mqtt_interface.update_publish_topics(
+        {
+            "control/eos_ac_charge_demand": {"value": ac_power_for_mqtt},
+            "control/eos_dc_charge_demand": {
+                "value": base_control.get_current_dc_charge_demand()
+            },
+            "control/eos_discharge_allowed": {
+                "value": base_control.get_effective_discharge_allowed()
+            },
+        }
+    )
 
     last_control_data["current_soc"] = current_soc
     last_control_data["ac_charge_demand"] = ac_charge_demand_rel
@@ -710,6 +753,7 @@ class OptimizationScheduler:
         self._update_thread_optimization_loop = None
         self._stop_event = threading.Event()
         self._last_avg_runtime = 120  # Initialize with a default value
+        self._last_dyn_override_array = []  # Initialize override array for chart
         self.__start_update_service_optimization_loop()
         self._update_thread_control_loop = None
         self._stop_event_control_loop = threading.Event()
@@ -729,6 +773,12 @@ class OptimizationScheduler:
         Returns the current state of the optimization scheduler.
         """
         return self.current_state
+
+    def get_last_dyn_override_array(self):
+        """
+        Returns the last dynamic override array for all time slots.
+        """
+        return self._last_dyn_override_array
 
     def __set_state_request(self):
         """
@@ -862,8 +912,25 @@ class OptimizationScheduler:
         optimized_response, avg_runtime = eos_interface.optimize(
             json_optimize_input, config_manager.config["eos"]["timeout"]
         )
-        # Store the runtime for use in sleep calculation
-        self._last_avg_runtime = avg_runtime
+        # Store the runtime for use in sleep calculation (defensive against None)
+        try:
+            if avg_runtime is None:
+                # keep previous value or default if not present
+                self._last_avg_runtime = getattr(self, "_last_avg_runtime", 120)
+                logger.warning(
+                    "[Main] optimize() returned no avg_runtime; keeping previous value: %s",
+                    self._last_avg_runtime,
+                )
+            else:
+                self._last_avg_runtime = avg_runtime
+        except (TypeError, AttributeError) as e:
+            # fallback to a sensible default and log the specific error
+            logger.warning(
+                "[Main] Error processing avg_runtime (%s): %s. Falling back to default.",
+                type(avg_runtime).__name__ if "avg_runtime" in locals() else "Unknown",
+                e,
+            )
+            self._last_avg_runtime = 120
 
         json_optimize_input["timestamp"] = datetime.now(time_zone).isoformat()
         self.last_request_response["request"] = json.dumps(
@@ -880,11 +947,17 @@ class OptimizationScheduler:
         ) as file:
             json.dump(optimized_response, file, indent=4)
         # +++++++++
-        ac_charge_demand, dc_charge_demand, discharge_allowed, error = (
-            eos_interface.examine_response_to_control_data(optimized_response)
-        )
+        (
+            ac_charge_demand,
+            dc_charge_demand,
+            discharge_allowed,
+            error,
+            dyn_override_array,
+        ) = eos_interface.examine_response_to_control_data(optimized_response)
         if error is not True:
             setting_control_data(ac_charge_demand, dc_charge_demand, discharge_allowed)
+            # Store the override array for API response
+            self._last_dyn_override_array = dyn_override_array
             # get recent evcc states
             base_control.set_current_evcc_charging_state(
                 evcc_interface.get_charging_state()
@@ -973,25 +1046,30 @@ class OptimizationScheduler:
             )
             return
 
-        if error is not True:
-            # logger.debug(
-            #     "[Main] Optimization fast control loop - current state: %s (Num: %s) "+
-            #     "-> ac_charge_demand: %s, dc_charge_demand: %s, discharge_allowed: %s",
-            #     base_control.get_current_overall_state(),
-            #     base_control.get_current_overall_state_number(),
-            #     ac_charge_demand,
-            #     dc_charge_demand,
-            #     discharge_allowed,
-            # )
-            setting_control_data(ac_charge_demand, dc_charge_demand, discharge_allowed)
-            # get recent evcc states
-            base_control.set_current_evcc_charging_state(
-                evcc_interface.get_charging_state()
-            )
-            base_control.set_current_evcc_charging_mode(
-                evcc_interface.get_charging_mode()
-            )
-            change_control_state()
+        # On error, default to safe mode: no charging, discharge allowed
+        if error is True:
+            ac_charge_demand = 0
+            dc_charge_demand = 0
+            discharge_allowed = True
+
+        # logger.debug(
+        #     "[Main] Optimization fast control loop - current state: %s (Num: %s) "+
+        #     "-> ac_charge_demand: %s, dc_charge_demand: %s, discharge_allowed: %s",
+        #     base_control.get_current_overall_state(),
+        #     base_control.get_current_overall_state_number(),
+        #     ac_charge_demand,
+        #     dc_charge_demand,
+        #     discharge_allowed,
+        # )
+        setting_control_data(ac_charge_demand, dc_charge_demand, discharge_allowed)
+        # get recent evcc states
+        base_control.set_current_evcc_charging_state(
+            evcc_interface.get_charging_state()
+        )
+        base_control.set_current_evcc_charging_mode(
+            evcc_interface.get_charging_mode()
+        )
+        change_control_state()
         # logger.debug(
         #     "[Main] Optimization control loop - secondly check - current state: %s (Num: %s)",
         #     base_control.get_current_overall_state(),
@@ -1034,7 +1112,10 @@ class OptimizationScheduler:
         self.__start_update_service_data_loop()
 
     def __run_data_loop(self):
-        if inverter_type in ["fronius_gen24", "fronius_gen24_legacy"]:
+        if (
+            inverter_interface is not None
+            and inverter_interface.supports_extended_monitoring
+        ):
             inverter_interface.fetch_inverter_data()
             mqtt_interface.update_publish_topics(
                 {
@@ -1123,10 +1204,15 @@ def change_control_state():
     """
     inverter_fronius_en = False
     inverter_evcc_en = False
-    if inverter_type in ["fronius_gen24", "fronius_gen24_legacy"]:
-        inverter_fronius_en = True
-    elif config_manager.config["inverter"]["type"] == "evcc":
-        inverter_evcc_en = True
+    # Check if we have an active inverter (Fronius) or if EVCC/display-only mode is enabled
+    if inverter_interface is not None:
+        if isinstance(inverter_interface, EvccInverter):
+            inverter_evcc_en = True
+        elif isinstance(inverter_interface, NullInverter):
+            inverter_evcc_en = True
+        else:
+            # Real inverter (Fronius, Victron, etc.)
+            inverter_fronius_en = True
 
     current_overall_state = base_control.get_current_overall_state_number()
     current_overall_state_text = base_control.get_current_overall_state()
@@ -1177,18 +1263,22 @@ def change_control_state():
     tgt_ac_charge_power = min(
         base_control.get_needed_ac_charge_power(),
         round(battery_interface.get_max_charge_power()),
+        config_manager.config["inverter"]["max_grid_charge_rate"],
     )
     tgt_dc_charge_power = min(
         base_control.get_current_dc_charge_demand(),
         round(battery_interface.get_max_charge_power()),
+        config_manager.config["inverter"]["max_pv_charge_rate"],
     )
 
+    # Update current battery max to actual capability (after SOC/temp derating)
+    # This allows get_needed_ac_charge_power() to properly cap calculated demand
     base_control.set_current_bat_charge_max(
-        max(tgt_ac_charge_power, tgt_dc_charge_power)
+        round(battery_interface.get_max_charge_power())
     )
 
-    # Check if the overall state of the inverter was changed recently
-    if base_control.was_overall_state_changed_recently():
+    # Check if the overall state of the inverter was changed recently and consume the event
+    if base_control.was_overall_state_changed_recently(consume=True):
         logger.debug("[Main] Overall state changed recently")
         # MODE_CHARGE_FROM_GRID
         if current_overall_state == 0:
@@ -1431,11 +1521,15 @@ def get_controls():
     """
     current_ac_charge_demand = base_control.get_current_ac_charge_demand()
     current_dc_charge_demand = base_control.get_current_dc_charge_demand()
-    current_discharge_allowed = base_control.get_current_discharge_allowed()
+    # Use effective discharge allowed state (reflects final state after EVCC/manual overrides)
+    current_discharge_allowed = base_control.get_effective_discharge_allowed()
     current_battery_soc = battery_interface.get_current_soc()
     base_control.set_current_battery_soc(current_battery_soc)
     current_inverter_mode = base_control.get_current_overall_state()
     current_inverter_mode_num = base_control.get_current_overall_state_number()
+
+    # Get current actual power (logging handled in get_needed_ac_charge_power with change tracking)
+    actual_power = base_control.get_needed_ac_charge_power()
 
     currency = price_interface.get_price_currency()
     currency_symbol = CURRENCY_SYMBOL_MAP.get(currency, currency)
@@ -1444,12 +1538,22 @@ def get_controls():
     response_data = {
         "current_states": {
             "current_ac_charge_demand": current_ac_charge_demand,
+            "current_ac_charge_power": actual_power,  # Power in W, not energy
             "current_dc_charge_demand": current_dc_charge_demand,
             "current_discharge_allowed": current_discharge_allowed,
             "inverter_mode": current_inverter_mode,
             "inverter_mode_num": current_inverter_mode_num,
             "override_active": base_control.get_override_active_and_endtime()[0],
             "override_end_time": base_control.get_override_active_and_endtime()[1],
+            "dyn_override_discharge_allowed_enabled": config_manager.config.get(
+                "eos", {}
+            ).get("dyn_override_discharge_allowed_pv_greater_load", False),
+            "dyn_override_discharge_allowed_active": eos_interface.get_last_control_data()[
+                0
+            ].get(
+                "dyn_override_active", False
+            ),
+            "dyn_override_discharge_allowed_array": optimization_scheduler.get_last_dyn_override_array(),
         },
         "evcc": {
             "charging_state": base_control.get_current_evcc_charging_state(),
@@ -1458,17 +1562,26 @@ def get_controls():
         },
         "battery": {
             "soc": current_battery_soc,
+            "capacity_wh": config_manager.config["battery"].get("capacity_wh", 0),
             "usable_capacity": battery_interface.get_current_usable_capacity(),
             "max_charge_power_dyn": battery_interface.get_max_charge_power(),
+            "max_charge_power_fix": config_manager.config["battery"].get(
+                "max_charge_power_w", 0
+            ),
+            "charging_curve_enabled": config_manager.config["battery"].get(
+                "charging_curve_enabled", True
+            ),
+            "temperature": battery_interface.current_temp,
             "max_grid_charge_rate": config_manager.config["inverter"][
                 "max_grid_charge_rate"
             ],
+            "stored_energy": battery_interface.get_stored_energy_info(),
         },
         "inverter": {
             "inverter_special_data": (
                 inverter_interface.get_inverter_current_data()
-                if inverter_type in ["fronius_gen24", "fronius_gen24_legacy"]
-                and inverter_interface is not None
+                if inverter_interface is not None
+                and inverter_interface.supports_extended_monitoring
                 else None
             )
         },
@@ -1484,11 +1597,37 @@ def get_controls():
         "used_time_frame_base": time_frame_base,
         "eos_connect_version": __version__,
         "timestamp": datetime.now(time_zone).isoformat(),
-        "api_version": "0.0.3",
+        "api_version": "0.0.4",
     }
     return Response(
         json.dumps(response_data, indent=4), content_type="application/json"
     )
+
+
+@app.route("/json/price_info.json", methods=["GET"])
+def get_price_info():
+    """
+    Returns price forecast metadata for UI visualization.
+
+    Provides information about whether prices are real data, simple repetition,
+    or smart forecasted, to help distinguish in charts and tables.
+    """
+    forecast_metadata = price_interface.get_forecast_metadata()
+
+    response_data = {
+        "forecast_start_index": forecast_metadata.get("forecast_start_index"),
+        "forecast_type": forecast_metadata.get("forecast_type"),
+        "forecast_source": forecast_metadata.get("forecast_source"),
+        "timestamp": datetime.now(time_zone).isoformat(),
+        "api_version": "0.0.1",
+    }
+    response = Response(
+        json.dumps(response_data, indent=4), content_type="application/json"
+    )
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
 
 
 @app.route("/json/test/<filename>")
@@ -1803,6 +1942,56 @@ def get_log_stats():
         )
 
 
+@app.route("/api/update/status", methods=["GET"])
+def get_update_status():
+    """
+    Get update checker status.
+
+    Returns information about available updates for Docker image users.
+    For Home Assistant Add-on users, this will indicate that update checking
+    is handled by Home Assistant.
+
+    Returns:
+        JSON response with update status including:
+        - enabled: Whether update checking is active
+        - is_ha_addon: Whether running as HA Add-on
+        - current_version: Current EOS Connect version
+        - is_develop_branch: Whether on develop or stable branch
+        - update_available: Whether an update is available
+        - latest_version: Latest available version (if any)
+        - last_check_time: Unix timestamp of last check
+        - last_check_success: Whether last check succeeded
+        - last_error: Error message from last check (if any)
+        - next_check_in_seconds: Seconds until next automatic check
+    """
+    try:
+        status = update_checker.get_update_status()
+
+        response_data = {
+            "update_status": status,
+            "timestamp": datetime.now(time_zone).isoformat(),
+            "api_version": "0.0.1",
+        }
+
+        response = Response(
+            json.dumps(response_data, indent=2), content_type="application/json"
+        )
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        return response
+
+    except (ValueError, TypeError, KeyError, AttributeError) as e:
+        logger.error("[Web] Error retrieving update status: %s", e)
+        return Response(
+            json.dumps(
+                {"error": "Failed to retrieve update status", "message": str(e)}
+            ),
+            status=500,
+            content_type="application/json",
+        )
+
+
 if __name__ == "__main__":
     http_server = None
     try:
@@ -1850,11 +2039,9 @@ if __name__ == "__main__":
             http_server.stop()
             logger.info("[Main] HTTP server stopped")
 
-        # restore the old config
-        if (
-            config_manager.config["inverter"]["type"]
-            in ["fronius_gen24", "fronius_gen24_v2"]
-            and inverter_interface is not None
+        # Shutdown real inverter if it exists (not NullInverter/display-only or EvccInverter)
+        if inverter_interface is not None and not isinstance(
+            inverter_interface, (NullInverter, EvccInverter)
         ):
             inverter_interface.shutdown()
         pv_interface.shutdown()
@@ -1862,6 +2049,7 @@ if __name__ == "__main__":
         mqtt_interface.shutdown()
         evcc_interface.shutdown()
         battery_interface.shutdown()
+        update_checker.shutdown()
         logger.info("[Main] Server stopped gracefully")
     finally:
         logging.shutdown()  # This will call close() on all handlers

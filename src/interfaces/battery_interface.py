@@ -39,10 +39,26 @@ Example:
 import logging
 import threading
 import time
+from datetime import datetime
 import requests
+from .battery_price_handler import BatteryPriceHandler
 
 logger = logging.getLogger("__main__")
 logger.info("[BATTERY-IF] loading module ")
+
+# Temperature Compensation
+# ========================
+# Battery temperature derating uses a generic curve derived from official BYD HVM
+# datasheet specifications. This approach is equipment-agnostic and works with any
+# battery capacity or inverter combination while maintaining manufacturer-validated
+# safety principles for LiFePO4 batteries.
+#
+# The __calculate_temp_multiplier method implements thermal protection with these zones:
+# - Cold protection (-10°C): Prevents lithium-plating damage
+# - Optimal range (12-40°C): 100% charging capacity
+# - Thermal protection (40-60°C): Reduces power to protect battery
+#
+# Generic implementation - suitable for any LiFePO4 battery system.
 
 
 class BatteryInterface:
@@ -63,108 +79,50 @@ class BatteryInterface:
             Fetches the current SOC of the battery based on the configured source.
     """
 
-    def __init__(self, config, on_bat_max_changed=None):
+    def __init__(
+        self,
+        config,
+        on_bat_max_changed=None,
+        load_interface=None,
+        timezone=None,
+        base_control=None,
+        request_timeout=10,  # Default timeout for API requests
+    ):
         self.src = config.get("source", "default")
         self.url = config.get("url", "")
         self.soc_sensor = config.get("soc_sensor", "")
+        self.temp_sensor = config.get("sensor_battery_temperature", "")
         self.access_token = config.get("access_token", "")
         self.max_charge_power_fix = config.get("max_charge_power_w", 1000)
         self.battery_data = config
         self.max_charge_power_dyn = 0
         self.last_max_charge_power_dyn = 0
         self.current_soc = 0
+        self.current_temp = None  # None = sensor not configured or failed
+        self.temp_fail_count = 0
+        self.last_logged_temp_multiplier = None  # To reduce log spam
         self.current_usable_capacity = 0
         self.on_bat_max_changed = on_bat_max_changed
+        self.base_control = base_control  # Store reference to base_control
         self.min_soc_set = config.get("min_soc_percentage", 0)
         self.max_soc_set = config.get("max_soc_percentage", 100)
+        self.price_euro_per_wh = float(config.get("price_euro_per_wh_accu", 0.0))
+        self.price_sensor = config.get("price_euro_per_wh_sensor", "")
+        self.request_timeout = request_timeout  # Store configurable timeout
 
         self.soc_fail_count = 0
+
+        # Initialize dynamic price handler
+        self.price_handler = BatteryPriceHandler(
+            config, load_interface=load_interface, timezone=timezone
+        )
 
         self.update_interval = 30
         self._update_thread = None
         self._stop_event = threading.Event()
         self.start_update_service()
 
-    def __fetch_soc_data_from_openhab(self):
-        """
-        Fetches the State of Charge (SOC) data for the battery from the OpenHAB server.
-
-        This method sends a GET request to the OpenHAB REST API to retrieve the SOC value
-        for the battery. If the request is successful, the SOC value is extracted, converted
-        to a percentage, and returned. In case of a timeout or request failure, a default
-        SOC value of 5% is returned, and an error is logged.
-
-        Returns:
-            int: The SOC value as a percentage (0-100). Defaults to 5% in case of an error.
-        """
-        logger.debug("[BATTERY-IF] getting SOC from openhab ...")
-        openhab_url = self.url + "/rest/items/" + self.soc_sensor
-        soc = 5  # Default SOC value in case of error
-        try:
-            response = requests.get(openhab_url, timeout=6)
-            response.raise_for_status()
-            data = response.json()
-            raw_state = str(data["state"]).strip()
-            # Take only the first part before any space (handles "90", "90 %", "0.11 %", etc.)
-            cleaned_value = raw_state.split()[0]
-            raw_value = float(cleaned_value)
-
-            # Auto-detect format: if value is <= 1.0, assume it's decimal (0.0-1.0)
-            # if value is > 1.0, assume it's already percentage (0-100)
-            if raw_value <= 1.0:
-                soc = raw_value * 100  # Convert decimal to percentage
-                logger.debug(
-                    "[BATTERY-IF] Detected decimal format (0.0-1.0): %s -> %s%%",
-                    raw_value,
-                    soc,
-                )
-            else:
-                soc = raw_value  # Already in percentage format
-                logger.debug(
-                    "[BATTERY-IF] Detected percentage format (0-100): %s%%", soc
-                )
-            self.soc_fail_count = 0  # Reset fail count on success
-            return round(soc, 1)
-        except requests.exceptions.Timeout:
-            return self._handle_soc_error(
-                "openhab", "Request timed out", self.current_soc
-            )
-        except requests.exceptions.RequestException as e:
-            return self._handle_soc_error("openhab", e, self.current_soc)
-
-    def __fetch_soc_data_from_homeassistant(self):
-        """
-        Fetches the state of charge (SOC) data from the Home Assistant API.
-        This method sends a GET request to the Home Assistant API to retrieve the SOC
-        value for a specific sensor. The SOC value is expected to be in the 'state' field
-        of the API response and is converted to a percentage.
-        Returns:
-            int: The SOC value as a percentage, rounded to the nearest integer.
-                 Returns a default value of 5% in case of a timeout or request failure.
-        Raises:
-            requests.exceptions.Timeout: If the request to the Home Assistant API times out.
-            requests.exceptions.RequestException: If there is an error during the request.
-        """
-        homeassistant_url = f"{self.url}/api/states/{self.soc_sensor}"
-        # Headers for the API request
-        headers = {
-            "Authorization": f"Bearer {self.access_token}",
-            "Content-Type": "application/json",
-        }
-        soc = 5  # Default SOC value in case of error
-        try:
-            response = requests.get(homeassistant_url, headers=headers, timeout=6)
-            response.raise_for_status()
-            entity_data = response.json()
-            soc = float(entity_data["state"])
-            self.soc_fail_count = 0  # Reset fail count on success
-            return round(soc, 1)
-        except requests.exceptions.Timeout:
-            return self._handle_soc_error(
-                "homeassistant", "Request timed out", self.current_soc
-            )
-        except requests.exceptions.RequestException as e:
-            return self._handle_soc_error("homeassistant", e, self.current_soc)
+    # source-specific SOC fetchers removed — use __fetch_soc_data_unified
 
     def __battery_request_current_soc(self):
         """
@@ -176,21 +134,233 @@ class BatteryInterface:
             self.current_soc = 5
             default = True
             logger.debug("[BATTERY-IF] source set to default with start SOC = 5%")
-        elif self.src == "openhab":
-            self.current_soc = self.__fetch_soc_data_from_openhab()
-        elif self.src == "homeassistant":
-            self.current_soc = self.__fetch_soc_data_from_homeassistant()
         else:
-            self.current_soc = 5
-            default = True
-            logger.error(
-                "[BATTERY-IF] source currently not supported. Using default start SOC = 5%."
-            )
+            try:
+                self.current_soc = self.__fetch_soc_data_unified()
+            except ValueError:
+                # Unknown/invalid source -> fallback to default behavior
+                self.current_soc = 5
+                default = True
+                logger.error(
+                    "[BATTERY-IF] source currently not supported. Using default start SOC = 5%."
+                )
         if default is False:
             logger.debug(
                 "[BATTERY-IF] successfully fetched SOC = %s %%", self.current_soc
             )
         return self.current_soc
+
+    def __battery_request_current_temp(self):
+        """
+        Fetch the current battery temperature from the configured source.
+        Returns None if sensor not configured or fetch fails.
+        """
+        if not self.temp_sensor:
+            return None  # Sensor not configured - temperature compensation disabled
+
+        if self.src == "default":
+            return None  # Default mode doesn't support temperature
+
+        try:
+            raw_state = self.__fetch_remote_state(self.src, self.temp_sensor)
+            cleaned_value = raw_state.split()[0]
+            temp = float(cleaned_value)
+
+            # Sanity check: battery temperature should be reasonable
+            if temp < -30 or temp > 70:
+                logger.warning(
+                    "[BATTERY-IF] Unrealistic battery temperature: %s°C. Ignoring.",
+                    temp,
+                )
+                return self.current_temp  # Keep last valid value
+
+            self.temp_fail_count = 0
+            self.current_temp = temp
+            logger.debug("[BATTERY-IF] Successfully fetched Temp = %s°C", temp)
+            return temp
+
+        except (requests.exceptions.RequestException, ValueError, KeyError) as e:
+            self.temp_fail_count += 1
+            if self.temp_fail_count >= 5:
+                logger.warning(
+                    "[BATTERY-IF] Temperature sensor unavailable (%d failures). "
+                    "Temperature compensation disabled.",
+                    self.temp_fail_count,
+                )
+                return None
+            logger.debug(
+                "[BATTERY-IF] Error fetching temperature (attempt %d/5): %s",
+                self.temp_fail_count,
+                e,
+            )
+            return self.current_temp  # Use last known value
+
+    # source-specific price fetchers removed — use __fetch_price_data_unified
+
+    def __fetch_remote_state(self, source, sensor):
+        """Fetch the raw state string from OpenHAB or Home Assistant.
+
+        Returns the trimmed state string. Raises the original requests
+        exceptions for callers to handle.
+        """
+        if not sensor:
+            raise ValueError("Sensor/item identifier must be provided")
+
+        if source == "openhab":
+            url = self.url + "/rest/items/" + sensor
+            response = requests.get(url, timeout=self.request_timeout)
+            response.raise_for_status()
+            data = response.json()
+            return str(data.get("state", "")).strip()
+        elif source == "homeassistant":
+            url = f"{self.url}/api/states/{sensor}"
+            headers = {
+                "Authorization": f"Bearer {self.access_token}",
+                "Content-Type": "application/json",
+            }
+            response = requests.get(url, headers=headers, timeout=self.request_timeout)
+            response.raise_for_status()
+            data = response.json()
+            return str(data.get("state", "")).strip()
+        else:
+            raise ValueError(f"Unknown source: {source}")
+
+    def __fetch_soc_data_unified(self):
+        """Unified SOC fetch using the configured `self.src` source."""
+        try:
+            raw_state = self.__fetch_remote_state(self.src, self.soc_sensor)
+            cleaned_value = raw_state.split()[0]
+            raw_value = float(cleaned_value)
+            if raw_value <= 1.0:
+                # Use history to decide which format is closer to the last known value.
+                # If it's the first run (current_soc == 0), we default to decimal (x100)
+                # UNLESS the value is exactly 1.0, which we treat as 1% to avoid
+                # jumping to 100% incorrectly.
+                if self.current_soc > 0:
+                    diff_as_decimal = abs((raw_value * 100) - self.current_soc)
+                    diff_as_percent = abs(raw_value - self.current_soc)
+
+                    if diff_as_percent < diff_as_decimal:
+                        soc = raw_value
+                        # logger.debug(
+                        #     "[BATTERY-IF] Auto-detected percentage format "
+                        #     "(0-1) based on history: %s%%",
+                        #     soc,
+                        # )
+                    else:
+                        soc = raw_value * 100
+                        logger.debug(
+                            "[BATTERY-IF] Auto-detected decimal format "
+                            "(0.0-1.0) based on history: %s -> %s%%",
+                            raw_value,
+                            soc,
+                        )
+                elif raw_value == 1.0:
+                    # Special case for first run: 1.0 is more likely 1% than 100%
+                    # if we want to avoid accidental full-battery assumptions.
+                    soc = 1.0
+                    logger.debug(
+                        "[BATTERY-IF] First run: assuming 1.0 is 1%% (percentage format)"
+                    )
+                else:
+                    # Default for other values <= 1.0 on first run: assume decimal
+                    soc = raw_value * 100
+                    logger.debug(
+                        "[BATTERY-IF] First run: assuming decimal format "
+                        "for value %s -> %s%%",
+                        raw_value,
+                        soc,
+                    )
+            else:
+                # Values > 1.0 are clearly percentage format (0-100).
+                soc = raw_value
+                # logger.debug(
+                #     "[BATTERY-IF] Detected percentage format (0-100): %s%%", soc
+                # )
+
+            self.soc_fail_count = 0
+            return round(soc, 1)
+        except requests.exceptions.Timeout:
+            return self._handle_soc_error(
+                self.src, "Request timed out", self.current_soc
+            )
+        except requests.exceptions.RequestException as e:
+            return self._handle_soc_error(self.src, e, self.current_soc)
+        except (ValueError, KeyError) as e:
+            return self._handle_soc_error(self.src, e, self.current_soc)
+
+    def __fetch_price_data_unified(self):
+        """Unified price fetch using configured `self.src` (top-level source)."""
+        # If no sensor is configured, fall back to the static configured price
+        if not self.price_sensor:
+            return self.price_euro_per_wh
+
+        # Use top-level `source` for all remote fetches (SOC and price)
+        raw_state = self.__fetch_remote_state(self.src, self.price_sensor)
+        cleaned_value = raw_state.split()[0]
+        return float(cleaned_value)
+
+    def __update_price_euro_per_wh(self):
+        """
+        Update the battery price from the configured source if needed.
+        """
+        # If dynamic price calculation is enabled, use the handler
+        if self.price_handler and self.price_handler.price_calculation_enabled:
+            if self.price_handler.update_price_if_needed(
+                inventory_wh=self.current_usable_capacity
+            ):
+                self.price_euro_per_wh = self.price_handler.get_current_price()
+                logger.info(
+                    "[BATTERY-IF] Dynamic battery price updated: %.4f €/kWh",
+                    self.price_euro_per_wh * 1000,
+                )
+            return self.price_euro_per_wh
+
+        # If top-level source is default, keep configured static price
+        if self.src == "default":
+            return self.price_euro_per_wh
+
+        # If no sensor configured, use static configured price
+        if not self.price_sensor:
+            return self.price_euro_per_wh
+
+        source_name = self.src.upper()
+        if self.src not in ("homeassistant", "openhab"):
+            logger.warning(
+                "[BATTERY-IF] Unknown price source '%s'. Keeping last value %s.",
+                self.src,
+                self.price_euro_per_wh,
+            )
+            return self.price_euro_per_wh
+
+        try:
+            latest_price = self.__fetch_price_data_unified()
+        except requests.exceptions.Timeout:
+            logger.warning(
+                "[BATTERY-IF] %s - Request timed out while fetching "
+                + "price_euro_per_wh_accu. Keeping last value %s.",
+                source_name,
+                self.price_euro_per_wh,
+            )
+            return self.price_euro_per_wh
+        except (requests.exceptions.RequestException, ValueError, KeyError) as exc:
+            logger.warning(
+                "[BATTERY-IF] %s - Error fetching price sensor data: %s. "
+                + "Keeping last value %s.",
+                source_name,
+                exc,
+                self.price_euro_per_wh,
+            )
+            return self.price_euro_per_wh
+
+        self.price_euro_per_wh = latest_price
+        logger.debug(
+            "[BATTERY-IF] Updated price_euro_per_wh_accu from %s sensor %s: %s",
+            self.src,
+            self.price_sensor,
+            self.price_euro_per_wh,
+        )
+        return self.price_euro_per_wh
 
     def _handle_soc_error(self, source, error, last_soc):
         self.soc_fail_count += 1
@@ -235,6 +405,21 @@ class BatteryInterface:
         Returns the minimum state of charge (SOC) percentage of the battery.
         """
         return self.min_soc_set
+
+    def get_price_euro_per_wh(self):
+        """
+        Returns the current battery price in €/Wh.
+        """
+        return self.price_euro_per_wh
+
+    def get_stored_energy_info(self):
+        """
+        Returns detailed information about the stored energy cost analysis.
+        """
+        results = self.price_handler.get_analysis_results().copy()
+        results["enabled"] = self.price_handler.price_calculation_enabled
+        results["price_source"] = "sensor" if self.price_sensor else "fixed"
+        return results
 
     def set_min_soc(self, min_soc):
         """
@@ -288,19 +473,82 @@ class BatteryInterface:
             max_soc = self.battery_data.get("max_soc_percentage", 100)
         self.max_soc_set = max_soc
 
-    def __get_max_charge_power_dyn(self, soc=None, min_charge_power=500):
+    def __calculate_temp_multiplier(self, temp):
         """
-        Calculates the maximum charge power of the battery dynamically based on SOC
-        using a decay function that incorporates the C-rate.
+        Calculate temperature compensation multiplier using a generic thermal derating curve
+        derived from BYD HVM battery specifications.
 
-        The formula reduces the charge power as SOC increases:
+        This C-rate multiplier is equipment-agnostic and works with any battery capacity
+        or inverter combination. While derived from BYD HVM specifications, it's implemented
+        as a generic solution suitable for LiFePO4 batteries from any manufacturer.
+
+        Derating zones (derived from BYD HVM specifications):
+        - Below -10°C: 0% (Charging locked - cell damage protection)
+        - -10 to 0°C: Linear ramp 7.5% → 50% (Lithium-plating danger)
+        - 0 to 5°C: 50% (Moderate derating)
+        - 5 to 12°C: Linear ramp 50% → 77% (Light derating - battery warming)
+        - 12 to 40°C: 100% (Optimal range)
+        - 40 to 50°C: Linear ramp 100% → 50% (Thermal derating)
+        - 50 to 60°C: Linear ramp 50% → 0% (Severe derating)
+        - Above 60°C: 0% (Shutdown - overheat protection)
+
+        Args:
+            temp (float): Battery temperature in °C
+
+        Returns:
+            float: C-rate multiplier between 0.0 and 1.0
+        """
+        if temp is None:
+            return 1.0  # No temperature sensor - assume optimal conditions
+
+        if temp < -10:
+            # Charging locked below -10°C - prevents cell damage
+            return 0.0
+        elif temp < 0:
+            # Strong derating: linear ramp from 7.5% to 50%
+            # Protects against lithium-plating in extreme cold
+            return 0.075 + ((temp + 10) / 10) * (0.50 - 0.075)
+        elif temp < 5:
+            # Moderate derating: flat 50%
+            return 0.50
+        elif temp < 12:
+            # Light derating: linear ramp from 50% to 77%
+            # Battery gradually accepts more power as it warms from 5-12°C
+            progress = (temp - 5) / 7
+            return 0.50 + progress * (0.77 - 0.50)
+        elif temp <= 40:
+            # Optimal operating range: 100% capacity
+            return 1.0
+        elif temp < 50:
+            # Thermal derating: linear ramp from 100% to 50%
+            # Battery protection during heat conditions (40-50°C)
+            progress = (temp - 40) / 10
+            return 1.0 - progress * (1.0 - 0.50)
+        elif temp < 60:
+            # Severe derating: linear ramp from 50% to 0%
+            # Critical heat protection (50-60°C)
+            progress = (temp - 50) / 10
+            return 0.50 * (1 - progress)
+        else:
+            # Shutdown above 60°C - overheat protection
+            return 0.0
+
+    def __get_max_charge_power_dyn(self, soc=None, temp=None, min_charge_power=500):
+        """
+        Calculates the maximum charge power dynamically based on SOC and temperature.
+
+        The formula reduces the charge power as SOC increases and applies temperature
+        compensation to protect the battery:
         - At low SOC, the charge power is close to the maximum C-rate (e.g., 1C).
         - As SOC approaches 100%, the charge power decreases exponentially.
+        - Temperature compensation is automatically applied if sensor is configured.
         - The charge power is never less than the specified minimum value.
 
         Args:
             soc (float, optional): The state of charge to use for calculation.
                                 If None, the current SOC is used.
+            temp (float, optional): The battery temperature in °C.
+                                If None, the current temperature is used.
             min_charge_power (float): The minimum charge power in watts.
 
         Returns:
@@ -309,57 +557,77 @@ class BatteryInterface:
         if not self.battery_data.get("charging_curve_enabled", True):
             self.max_charge_power_dyn = self.max_charge_power_fix
             logger.debug(
-                "[BATTERY-IF] Charging curve is disabled, using fixed max charge power."
+                "[BATTERY-IF] Charging curve disabled, using fixed max charge power."
             )
             return
 
         if soc is None:
             soc = self.current_soc
+        if temp is None:
+            temp = self.current_temp  # May be None if not configured
 
-        # Get the battery capacity in watt-hours
         battery_capacity_wh = self.battery_data.get("capacity_wh", 0)
 
         if battery_capacity_wh <= 0:
-            logger.warning("[BATTERY-IF] Battery capacity is not set or invalid.")
-            return min_charge_power
+            logger.warning("[BATTERY-IF] Battery capacity not set or invalid.")
+            self.max_charge_power_dyn = min_charge_power
+            return
 
-        # Ensure SOC is within valid bounds
         if soc < 0 or soc > 100:
             logger.warning(
-                "[BATTERY-IF] Invalid SOC value: %s. Returning minimum charge power.",
+                "[BATTERY-IF] Invalid SOC value: %s. Using minimum charge power.",
                 soc,
             )
-            return min_charge_power
+            self.max_charge_power_dyn = min_charge_power
+            return
 
-        # Define the maximum C-rate (e.g., 1C at low SOC)
-        max_c_rate = 1.0  # 1C means charging at full capacity per hour
-        min_c_rate = 0.05  # Minimum C-rate at high SOC (e.g., 5% of capacity)
+        # SOC-based C-rate calculation
+        # Max C-rate is based on configured max charge power relative to battery capacity
+        max_c_rate = self.max_charge_power_fix / battery_capacity_wh
+        min_c_rate = 0.05
 
         if soc <= 50:
-            # Linear decrease of C-rate up to 50% SOC
-            c_rate = max_c_rate
+            c_rate_soc = max_c_rate
         else:
-            # Logarithmic decrease of C-rate after 50% SOC
-            c_rate = max(min_c_rate, max_c_rate * (1 - (soc - 50) / 60) ** 2)
+            c_rate_soc = max(min_c_rate, max_c_rate * (1 - (soc - 50) / 60) ** 2)
 
-        # Calculate the maximum charge power in watts
-        max_charge_power = c_rate * battery_capacity_wh
+        # Temperature compensation
+        temp_multiplier = self.__calculate_temp_multiplier(temp)
 
-        # Ensure the charge power does not exceed the fixed maximum charge power
+        # Combine factors
+        final_c_rate = c_rate_soc * temp_multiplier
+
+        # Calculate power
+        max_charge_power = final_c_rate * battery_capacity_wh
         max_charge_power = min(max_charge_power, self.max_charge_power_fix)
-
-        # Round the charge power to the nearest 50 watts
         max_charge_power = round(max_charge_power / 50) * 50
+        max_charge_power = max(max_charge_power, min_charge_power)
 
-        self.max_charge_power_dyn = max(max_charge_power, min_charge_power)
-        if self.max_charge_power_dyn != self.last_max_charge_power_dyn:
-            self.last_max_charge_power_dyn = self.max_charge_power_dyn
-            logger.info(
-                "[BATTERY-IF] Max dynamic charge power changed to %s W",
-                self.max_charge_power_dyn,
+        # Update and notify if changed
+        if max_charge_power != self.last_max_charge_power_dyn:
+            self.max_charge_power_dyn = max_charge_power
+            self.last_max_charge_power_dyn = max_charge_power
+
+            # Enhanced logging with context
+            temp_info = (
+                f", Temp: {temp:.1f}°C (×{temp_multiplier:.2f})"
+                if temp is not None
+                else ""
             )
+            logger.info(
+                "[BATTERY-IF] Max charge power: %s W (SOC: %s%%%s)",
+                self.max_charge_power_dyn,
+                soc,
+                temp_info,
+            )
+
+            if self.base_control:
+                self.base_control.set_current_bat_charge_max(self.max_charge_power_dyn)
+
             if self.on_bat_max_changed:
                 self.on_bat_max_changed()
+        else:
+            self.max_charge_power_dyn = max_charge_power
 
     def start_update_service(self):
         """
@@ -389,6 +657,7 @@ class BatteryInterface:
         while not self._stop_event.is_set():
             try:
                 self.__battery_request_current_soc()
+                self.__battery_request_current_temp()
                 self.current_usable_capacity = max(
                     0,
                     (
@@ -402,6 +671,7 @@ class BatteryInterface:
                     ),
                 )
                 self.__get_max_charge_power_dyn()
+                self.__update_price_euro_per_wh()
 
             except (requests.exceptions.RequestException, ValueError, KeyError) as e:
                 logger.error("[BATTERY-IF] Error while updating state: %s", e)
@@ -414,3 +684,70 @@ class BatteryInterface:
                 sleep_interval -= 1
 
         self.start_update_service()
+
+    def perform_initial_price_calculation(self):
+        """
+        Perform initial battery price calculation synchronously if enabled.
+        This should be called during startup before the first optimization run.
+
+        Returns:
+            bool: True if calculation completed successfully (or was not needed),
+                  False if calculation failed.
+        """
+        if not self.price_handler or not self.price_handler.price_calculation_enabled:
+            logger.info(
+                "[BATTERY-IF] Battery price calculation disabled - using static config value: %.6f €/Wh",
+                self.price_euro_per_wh,
+            )
+            return True
+
+        logger.info(
+            "[BATTERY-IF] Battery price calculation enabled - performing initial calculation..."
+        )
+        start_calc_time = time.time()
+
+        # Ensure we have current SOC, temperature and usable capacity before calculation
+        self.__battery_request_current_soc()
+        self.__battery_request_current_temp()
+        self.current_usable_capacity = max(
+            0,
+            (
+                self.battery_data.get("capacity_wh", 0)
+                * self.battery_data.get("discharge_efficiency", 1.0)
+                * (self.current_soc - self.battery_data.get("min_soc_percentage", 0))
+                / 100
+            ),
+        )
+
+        # **FIX: Set timestamp BEFORE calculation to prevent race condition**
+        self.price_handler.last_price_calculation = (
+            datetime.now(self.price_handler.timezone)
+            if self.price_handler.timezone
+            else datetime.now()
+        )
+
+        # Perform the calculation (full lookback, no workaround)
+        initial_price = self.price_handler.calculate_battery_price_from_history(
+            inventory_wh=self.current_usable_capacity
+        )
+
+        calc_duration = time.time() - start_calc_time
+
+        if initial_price is not None:
+            self.price_euro_per_wh = initial_price
+            # timestamp already set above
+            logger.info(
+                "[BATTERY-IF] Initial battery price calculated: %.6f €/Wh (%.4f €/kWh) in %.1f seconds",
+                initial_price,
+                initial_price * 1000,
+                calc_duration,
+            )
+            return True
+        else:
+            logger.warning(
+                "[BATTERY-IF] Initial battery price calculation failed after %.1f seconds - "
+                "using static config value: %.6f €/Wh",
+                calc_duration,
+                self.price_euro_per_wh,
+            )
+            return False

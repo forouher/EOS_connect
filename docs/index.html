@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EOS Connect - Intelligent Energy Management</title>
+    <link rel="stylesheet" href="assets/css/style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.2/css/all.min.css">
+</head>
+<body>
+    <!-- DRAFT BANNER - REMOVE WHEN FINALIZED -->
+    <div class="draft-banner">
+        <i class="fas fa-exclamation-triangle"></i> DRAFT DOCUMENTATION - UNDER REVIEW <i class="fas fa-exclamation-triangle"></i>
+    </div>
+    <!-- END DRAFT BANNER -->
+
+    <!-- Navigation -->
+    <nav class="nav-header">
+        <div class="nav-container">
+            <a href="index.html" class="nav-logo">
+                <img src="assets/images/icon.png" alt="EOS Connect" style="height: 48px; vertical-align: middle; margin-right: 8px;">
+                <span>EOS Connect</span>
+                <span class="version-badge">v0.2.31</span>
+            </a>
+            <button class="mobile-menu-toggle" onclick="toggleMobileMenu()" aria-label="Toggle menu">
+                <i class="fas fa-bars"></i>
+            </button>
+            <ul class="nav-menu">
+                <li><a href="index.html" class="active">Home</a></li>
+                <li><a href="what-is/index.html">What Is</a></li>
+                <li><a href="user-guide/index.html">User Guide</a></li>
+                <li><a href="user-guide/configuration.html">Configuration</a></li>
+                <li><a href="advanced/index.html">Advanced</a></li>
+                <li><a href="developer/index.html">Developer</a></li>
+                <li><a href="https://github.com/ohAnd/EOS_connect" target="_blank"><i class="fab fa-github"></i> GitHub</a></li>
+                <li><a href="https://github.com/sponsors/ohAnd" target="_blank" title="Sponsor the project"><i class="fas fa-mug-hot"></i></a></li>
+            </ul>
+        </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <div class="container">
+        <!-- Page wrapper with sidebar -->
+        <div class="page-wrapper">
+            <!-- Table of Contents Sidebar -->
+            <aside class="toc-sidebar">
+                <h3>On This Page</h3>
+                <nav class="toc-nav">
+                    <a href="#overview" class="toc-link">Overview</a>
+                    <a href="#role" class="toc-link">What It Does</a>
+                    <a href="#at-a-glance" class="toc-link">At a Glance</a>
+                    <a href="#features" class="toc-link">Key Features</a>
+                    <a href="#quick-start" class="toc-link">Quick Start</a>
+                    <a href="#status" class="toc-link">Project Status</a>
+                    <a href="#community" class="toc-link">Community</a>
+                </nav>
+            </aside>
+
+            <!-- Main content -->
+            <main class="main-content">
+        <div class="hero" id="overview">
+            <h1>EOS Connect</h1>
+            <p>Open-source integration and control platform for intelligent energy optimization</p>
+            <p style="font-size: 1rem; color: #aaa; margin-top: 1rem;">Bridges your energy system with external optimization engines (EOS/EVopt)</p>
+        </div>
+
+        <!-- 4 Main Navigation Blocks -->
+        <div class="main-blocks" id="main-nav">
+            <!-- Block 1: What is EOS Connect -->
+            <div class="block-card" id="overview">
+                <div class="card-header">
+                    <div class="icon">
+                        <i class="fas fa-info-circle"></i>
+                    </div>
+                    <h2>What is EOS Connect?</h2>
+                </div>
+                <p>Learn about EOS Connect's features, capabilities, and how it optimizes your energy system for maximum efficiency and cost savings.</p>
+                <a href="what-is/index.html" class="btn">Learn More →</a>
+            </div>
+
+            <!-- Block 2: Getting Started -->
+            <div class="block-card" id="getting-started">
+                <div class="card-header">
+                    <div class="icon">
+                        <i class="fas fa-rocket"></i>
+                    </div>
+                    <h2>Getting Started</h2>
+                </div>
+                <p>Quick installation guide, configuration setup, and everything you need to get EOS Connect running on your system.</p>
+                <a href="user-guide/index.html" class="btn">Get Started →</a>
+            </div>
+
+            <!-- Block 3: Advanced Features -->
+            <div class="block-card" id="advanced">
+                <div class="card-header">
+                    <div class="icon">
+                        <i class="fas fa-cogs"></i>
+                    </div>
+                    <h2>Advanced Features</h2>
+                </div>
+                <p>Explore API integration, MQTT control, external system integration, and advanced energy optimization techniques.</p>
+                <a href="advanced/index.html" class="btn">Explore Advanced →</a>
+            </div>
+
+            <!-- Block 4: Developer Guide -->
+            <div class="block-card" id="developer">
+                <div class="card-header">
+                    <div class="icon">
+                        <i class="fas fa-code"></i>
+                    </div>
+                    <h2>Developer Guide</h2>
+                </div>
+                <p>Architecture overview, contribution guidelines, testing procedures, and development setup for contributors.</p>
+                <a href="developer/index.html" class="btn">Start Contributing →</a>
+            </div>
+        </div>
+
+        <!-- Role Clarification -->
+        <div class="content-section" id="role">
+            <h2><i class="fas fa-search"></i> What Does EOS Connect Do?</h2>
+            <div class="alert alert-info">
+                <strong><i class="fas fa-lightbulb"></i> Important:</strong> EOS Connect is an <strong>integration and control platform</strong> that bridges your energy system with external optimization engines. It collects data from your devices (battery, inverter, sensors), sends it to an optimization backend (EOS or EVopt), receives the optimization results, and controls your devices accordingly.
+            </div>
+            <p><strong>The actual optimization calculations are performed by:</strong></p>
+            <ul>
+                <li><strong>Akkudoktor EOS</strong> - Full-featured optimization engine (default) - <a href="https://github.com/Akkudoktor-EOS/EOS" target="_blank"><i class="fab fa-github"></i> GitHub</a></li>
+                <li><strong>EVopt</strong> - Lightweight, very fast alternative - <a href="https://github.com/thecem/hassio-evopt" target="_blank"><i class="fab fa-github"></i> GitHub</a></li>
+            </ul>
+            <p><strong>EOS Connect handles:</strong></p>
+            <ul>
+                <li><i class="fas fa-check"></i> Data collection from your devices (battery SOC, PV production, load, etc.)</li>
+                <li><i class="fas fa-check"></i> Forecast integration (PV forecasts, electricity prices, weather)</li>
+                <li><i class="fas fa-check"></i> Communication with optimization backend</li>
+                <li><i class="fas fa-check"></i> Executing optimization results (controlling inverter, battery, EV charger)</li>
+                <li><i class="fas fa-check"></i> Web dashboard for monitoring and manual control</li>
+                <li><i class="fas fa-check"></i> API and MQTT interfaces for integration</li>
+            </ul>
+        </div>
+
+        <!-- Quick Overview Section -->
+        <div class="content-section" id="at-a-glance">
+            <h2><i class="fas fa-bullseye"></i> At a Glance</h2>
+            
+            <div class="feature-grid">
+                <div class="feature-item">
+                    <h4><i class="fas fa-battery-full"></i> Battery Management</h4>
+                    <p>Dynamic charging curves, temperature protection, SOC-based optimization</p>
+                </div>
+                <div class="feature-item">
+                    <h4><i class="fas fa-sun"></i> Solar Forecasting</h4>
+                    <p>Multiple providers: Akkudoktor, Solcast, OpenMeteo, Forecast.Solar</p>
+                </div>
+                <div class="feature-item">
+                    <h4><i class="fas fa-dollar-sign"></i> Cost Optimization</h4>
+                    <p>Dynamic electricity pricing (Tibber, smartenergy.at, Stromligning)</p>
+                </div>
+                <div class="feature-item">
+                    <h4><i class="fas fa-car"></i> EV Charging</h4>
+                    <p>EVCC integration for intelligent electric vehicle charging</p>
+                </div>
+                <div class="feature-item">
+                    <h4><i class="fas fa-home"></i> Smart Home</h4>
+                    <p>Home Assistant integration with MQTT auto-discovery; OpenHAB supports MQTT auto-discovery via MQTT binding, and uses item-based integration and MQTT publishing</p>
+                </div>
+                <div class="feature-item">
+                    <h4><i class="fas fa-cog"></i> Inverter Control</h4>
+                    <p>Fronius GEN24 support with automatic firmware detection</p>
+                </div>
+                <div class="feature-item">
+                    <h4><i class="fas fa-chart-bar"></i> Web Dashboard</h4>
+                    <p>Real-time monitoring, manual controls, and system visualization</p>
+                </div>
+                <div class="feature-item">
+                    <h4><i class="fas fa-plug"></i> REST & MQTT API</h4>
+                    <p>Full programmatic control and data access</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Key Features Section -->
+        <div class="content-section" id="features">
+            <h2><i class="fas fa-star"></i> Key Features</h2>
+            
+            <h3>Automated Energy Optimization</h3>
+            <p>EOS Connect uses real-time and forecast data to maximize self-consumption and minimize grid costs. It supports two optimization backends:</p>
+            <ul>
+                <li><strong>Akkudoktor EOS</strong> - Full-featured optimization engine (default)</li>
+                <li><strong>EVopt</strong> - Lightweight, very fast alternative</li>
+            </ul>
+
+            <h3>Dynamic Battery Management</h3>
+            <ul>
+                <li><strong>SOC-Based Charging Control:</strong> Automatically reduces charging power as battery fills (exponential curve from 100% power at 50% SOC to ~5% power at 95% SOC)</li>
+                <li><strong>Temperature Protection:</strong> Protects battery from damage in extreme temperatures (-30°C to +70°C)</li>
+                <li><strong>Dynamic Price Calculation:</strong> Analyzes charging history to determine real cost of stored energy (LIFO inventory valuation)</li>
+                <li><strong><i class="fas fa-wand-magic-sparkles"></i> Sensor Auto-Detection:</strong> Correctly attributes charging to PV vs Grid by auto-detecting sensor polarity</li>
+            </ul>
+
+            <h3>Flexible Integration</h3>
+            <ul>
+                <li>Works with Home Assistant, OpenHAB, EVCC, and MQTT</li>
+                <li>Supports multiple PV forecast providers</li>
+                <li>Dynamic electricity pricing from various providers</li>
+                <li>Direct inverter control (Fronius GEN24) or via EVCC</li>
+            </ul>
+
+            <div class="alert alert-info">
+                <strong><i class="fas fa-lightbulb"></i> Tip:</strong> EOS Connect acts as a client and requires a running EOS or EVopt server for optimization calculations.
+            </div>
+        </div>
+
+        <!-- Quick Start Preview -->
+        <div class="content-section" id="quick-start">
+            <h2><i class="fas fa-rocket"></i> Quick Start</h2>
+            <p>Choose your installation method and get running in minutes:</p>
+            
+            <div class="feature-grid" style="margin-top: 2rem;">
+                <div class="feature-item" style="border-left: 4px solid #4a9eff;">
+                    <h4><i class="fas fa-home"></i> Home Assistant</h4>
+                    <p><strong>Recommended for HA users</strong></p>
+                    <ol style="font-size: 0.9em; text-align: left;">
+                        <li>Add ohAnd/ha_addons repository</li>
+                        <li>Install <strong>EOS</strong> (or <strong>EVopt</strong>) + EOS Connect add-ons</li>
+                        <li>Configure via HA UI</li>
+                        <li>Start both add-ons</li>
+                    </ol>
+                    <a href="user-guide/index.html#ha-install" class="btn-primary" style="margin-top: 1rem;">HA Guide →</a>
+                </div>
+                <div class="feature-item" style="border-left: 4px solid #4a9eff;">
+                    <h4><i class="fab fa-docker"></i> Docker</h4>
+                    <p><strong>Works on any system</strong></p>
+                    <pre style="font-size: 0.75em; text-align: left; padding: 0.5rem;"><code>git clone ...
+cd EOS_connect
+docker-compose up -d</code></pre>
+                    <p style="font-size: 0.9em;">Requires running EOS/EVopt server</p>
+                    <a href="user-guide/index.html#docker-install" class="btn-primary" style="margin-top: 1rem;">Docker Guide →</a>
+                </div>
+                <div class="feature-item" style="border-left: 4px solid #4a9eff;">
+                    <h4><i class="fas fa-terminal"></i> Local Python</h4>
+                    <p><strong>For development/custom setups</strong></p>
+                    <pre style="font-size: 0.75em; text-align: left; padding: 0.5rem;"><code>git clone ...
+pip install -r requirements.txt
+python src/eos_connect.py</code></pre>
+                    <p style="font-size: 0.9em;">Requires Python 3.11+</p>
+                    <a href="user-guide/index.html#local-install" class="btn-primary" style="margin-top: 1rem;">Local Guide →</a>
+                </div>
+            </div>
+            
+            <div class="alert alert-warning" style="margin-top: 2rem;">
+                <strong><i class="fas fa-exclamation-triangle"></i> Prerequisite:</strong> All methods require a running <strong>EOS or EVopt server</strong> for optimization calculations. See <a href="user-guide/index.html#eos-server-setup">EOS Server Setup</a>.
+            </div>
+        </div>
+
+        <!-- Current Status -->
+        <div class="content-section" id="status">
+            <h2><i class="fas fa-chart-line"></i> Project Status</h2>
+            <p>EOS Connect is actively developed and enhanced. Recent highlights:</p>
+            
+            <ul>
+                <li><i class="fas fa-check-circle"></i> Enhanced Fronius GEN24 interface with automatic firmware detection</li>
+                <li><i class="fas fa-check-circle"></i> Temperature-based battery protection system</li>
+                <li><i class="fas fa-check-circle"></i> Dynamic battery price calculation (LIFO)</li>
+                <li><i class="fas fa-check-circle"></i> 15-minute optimization intervals (quarterly mode)</li>
+                <li><i class="fas fa-check-circle"></i> Multiple PV forecast provider support</li>
+                <li><i class="fas fa-check-circle"></i> Home Assistant MQTT Auto Discovery</li>
+            </ul>
+
+            <div class="alert alert-warning">
+                <strong><i class="fas fa-exclamation-triangle"></i> Note:</strong> This project is in active development. Always check the GitHub repository for the latest updates and breaking changes.
+            </div>
+        </div>
+
+        <!-- Community & Support -->
+        <div class="content-section" id="community">
+            <h2><i class="fas fa-users"></i> Community & Support</h2>
+            <p>Join our community and get help:</p>
+            
+            <div class="feature-grid">
+                <div class="feature-item">
+                    <h4><i class="fab fa-github"></i> GitHub</h4>
+                    <p><a href="https://github.com/ohAnd/EOS_connect" target="_blank">Report issues, contribute, and follow development</a></p>
+                </div>
+                <div class="feature-item">
+                    <h4><i class="fas fa-book"></i> Documentation</h4>
+                    <p>Comprehensive guides for users and developers</p>
+                </div>
+                <div class="feature-item">
+                    <h4><i class="fas fa-comments"></i> Discussions</h4>
+                    <p><a href="https://github.com/ohAnd/EOS_connect/discussions" target="_blank">Ask questions and share experiences</a></p>
+                </div>
+                <div class="feature-item">
+                    <h4><i class="fas fa-heart"></i> Contributing</h4>
+                    <p>PRs welcome! See our <a href="developer/index.html#contributing">contribution guidelines</a></p>
+                </div>
+                <div class="feature-item">
+                    <h4><i class="fas fa-coffee"></i> Sponsoring</h4>
+                    <p><a href="https://github.com/sponsors/ohAnd" target="_blank">Support the project on GitHub Sponsors</a></p>
+                </div>
+            </div>
+        </div>
+            </main>
+        </div>
+    </div>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <p>EOS Connect Documentation | <a href="index.html">Home</a> | <a href="https://github.com/ohAnd/EOS_connect">GitHub</a> | <a href="https://github.com/sponsors/ohAnd">Sponsor</a></p>
+    </footer>
+
+    <script>
+        // Scroll spy for TOC highlighting
+        const sections = document.querySelectorAll('.content-section, .hero');
+        const tocLinks = document.querySelectorAll('.toc-link');
+        
+        function highlightTOC() {
+            let current = '';
+            
+            sections.forEach(section => {
+                const sectionTop = section.offsetTop;
+                const sectionHeight = section.clientHeight;
+                if (pageYOffset >= (sectionTop - 200)) {
+                    current = section.getAttribute('id');
+                }
+            });
+            
+            tocLinks.forEach(link => {
+                link.classList.remove('active');
+                if (link.getAttribute('href') === '#' + current) {
+                    link.classList.add('active');
+                }
+            });
+        }
+        
+        window.addEventListener('scroll', highlightTOC);
+        highlightTOC(); // Initial highlight
+    </script>
+
+    <!-- Back to Top Button -->
+    <button class="back-to-top" onclick="scrollToTop()" aria-label="Back to top">
+        <i class="fas fa-chevron-up"></i>
+    </button>
+
+    <script>
+function toggleMobileMenu() {
+    const menu = document.querySelector('.nav-menu');
+    menu.classList.toggle('mobile-active');
+}
+
+// Close mobile menu when clicking outside
+document.addEventListener('click', function(event) {
+    const menu = document.querySelector('.nav-menu');
+    const toggle = document.querySelector('.mobile-menu-toggle');
+    if (menu.classList.contains('mobile-active') && !menu.contains(event.target) && !toggle.contains(event.target)) {
+        menu.classList.remove('mobile-active');
+    }
+});
+    </script>
+
+    <script>
+// Back to top button functionality
+const backToTopButton = document.querySelector('.back-to-top');
+
+window.addEventListener('scroll', function() {
+    if (window.pageYOffset > 300) {
+        backToTopButton.classList.add('visible');
+    } else {
+        backToTopButton.classList.remove('visible');
+    }
+});
+
+function scrollToTop() {
+    window.scrollTo({
+        top: 0,
+        behavior: 'smooth'
+    });
+}
+    </script>
+</body>
+</html>

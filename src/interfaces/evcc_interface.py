@@ -291,7 +291,12 @@ class EvccInterface:
                 ):
                     # Set the external battery mode if it is set
                     self.__set_external_battery_mode_loop()
-            except (requests.exceptions.RequestException, ValueError, KeyError) as e:
+            except (
+                requests.exceptions.RequestException,
+                ValueError,
+                KeyError,
+                TypeError,
+            ) as e:
                 logger.error(
                     "[EVCC] Error while updating charging state: %s."
                     + " Continuing with last known values",
@@ -310,14 +315,13 @@ class EvccInterface:
         if not data or not isinstance(data.get("loadpoints"), list):
             logger.error("[EVCC] Invalid or missing loadpoints in the response.")
             return None
-        # check if there are more than one loadpoints
-        loadpoints = data["loadpoints"] if data["loadpoints"] else None
-        # logger.debug(
-        #     "[EVCC] got 1st loadpoint: %s",
-        #     loadpoints[0].get("title") if loadpoints else "None",
-        # )
 
-        vehicles = data.get("vehicles", {})
+        # keep an empty list (instead of None) so downstream loops stay safe
+        loadpoints = data.get("loadpoints") or []
+
+        vehicles = data.get("vehicles")
+        if not isinstance(vehicles, dict):
+            vehicles = {}
 
         return loadpoints, vehicles
 
@@ -407,6 +411,10 @@ class EvccInterface:
         Fetches the EVCC state from the API and updates the charging state and mode.
         """
         self.current_detail_data_list = []
+        if not loadpoints:
+            # Preserve a safe default when EVCC returns no loadpoints
+            self.current_detail_data_list = self.__get_default_detail_data()
+            return False
         for loadpoint in loadpoints:
             vehicle_name = vehicles.get(loadpoint.get("vehicleName", ""), {}).get(
                 "title", ""
