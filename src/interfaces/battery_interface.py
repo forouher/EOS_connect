@@ -104,6 +104,7 @@ class BatteryInterface:
         self.current_usable_capacity = 0
         self.on_bat_max_changed = on_bat_max_changed
         self.base_control = base_control  # Store reference to base_control
+        self.fault_state = False
         self.min_soc_set = config.get("min_soc_percentage", 0)
         self.max_soc_set = config.get("max_soc_percentage", 100)
         self.price_euro_per_wh = float(config.get("price_euro_per_wh_accu", 0.0))
@@ -131,20 +132,23 @@ class BatteryInterface:
         # default value for start SOC = 5
         default = False
         if self.src == "default":
+            # In default testing mode, SOC baseline is 5%
             self.current_soc = 5
+            self.fault_state = False
             default = True
             logger.debug("[BATTERY-IF] source set to default with start SOC = 5%")
         else:
             try:
                 self.current_soc = self.__fetch_soc_data_unified()
+                self.fault_state = False
             except ValueError:
-                # Unknown/invalid source -> fallback to default behavior
-                self.current_soc = 5
-                default = True
+                self.fault_state = True
                 logger.error(
-                    "[BATTERY-IF] source currently not supported. Using default start SOC = 5%."
+                    "[BATTERY-IF] source currently not supported. Fault state entered."
                 )
-        if default is False:
+                # Keep last known SOC; do not pretend a mock value
+            # do not set default SOC on invalid source
+        if not self.fault_state and not default:
             logger.debug(
                 "[BATTERY-IF] successfully fetched SOC = %s %%", self.current_soc
             )
@@ -279,6 +283,7 @@ class BatteryInterface:
                 # )
 
             self.soc_fail_count = 0
+            self.fault_state = False
             return round(soc, 1)
         except requests.exceptions.Timeout:
             return self._handle_soc_error(
@@ -376,11 +381,12 @@ class BatteryInterface:
             return last_soc
         else:
             logger.error(
-                "[BATTERY-IF] %s - 5 consecutive SOC fetch failures. Using fallback SOC = 5%%.",
+                "[BATTERY-IF] %s - 5 consecutive SOC fetch failures. Entering fault state.",
                 source.upper(),
             )
-            self.soc_fail_count = 0  # Reset after fallback
-            return 5
+            self.fault_state = True
+            self.soc_fail_count = 0  # Reset after fault flag
+            return last_soc
 
     def get_current_soc(self):
         """

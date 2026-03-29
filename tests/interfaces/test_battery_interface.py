@@ -249,8 +249,9 @@ def test_soc_error_handling(default_config):
     # Simulate 5 consecutive failures
     for _ in range(5):
         result = bi._handle_soc_error("openhab", "fail", 42)
-    assert result == 5
+    assert result == 42
     assert bi.soc_fail_count == 0
+    assert bi.fault_state is True
 
 
 def test_set_min_soc_and_max_soc(default_config):

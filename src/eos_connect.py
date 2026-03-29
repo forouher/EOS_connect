@@ -638,6 +638,41 @@ last_control_data = {
     "discharge_allowed": None,
 }
 
+fault_state_active = False
+
+
+def _has_data_fault():
+    """Return True if one of the input interfaces is in a detected fault state."""
+    return any(
+        getattr(obj, "fault_state", False)
+        for obj in (battery_interface, pv_interface, load_interface)
+    )
+
+
+def _enter_fault_state():
+    """Switch to a safe inverter mode when data acquisition has failed."""
+    global fault_state_active
+    fault_state_active = True
+    logger.error("[Main] Data acquisition interruption: entering fault state")
+
+    # force safe values (no charging requested, discharge allowed)
+    base_control.set_current_ac_charge_demand(0)
+    base_control.set_current_dc_charge_demand(0)
+    base_control.set_current_discharge_allowed(True)
+
+    # enforce inverter mode immediately
+    _set_inverter_mode_by_state(inverter_interface, evcc_interface, 2, 0, 0)
+    return True
+
+
+def _exit_fault_state():
+    """Clear fault state when data sources are healthy again."""
+    global fault_state_active
+    if not _has_data_fault() and fault_state_active:
+        logger.info("[Main] Data acquisition recovered: exiting fault state")
+        fault_state_active = False
+    return not _has_data_fault()
+
 
 def setting_control_data(ac_charge_demand_rel, dc_charge_demand_rel, discharge_allowed):
     """
@@ -1261,6 +1296,12 @@ def change_control_state():
     """
     current_overall_state = base_control.get_current_overall_state_number()
     current_overall_state_text = base_control.get_current_overall_state()
+
+    if _has_data_fault():
+        return _enter_fault_state()
+
+    if fault_state_active:
+        _exit_fault_state()
 
     mqtt_interface.update_publish_topics(
         {

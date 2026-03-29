@@ -258,6 +258,22 @@ def test_get_load_profile_invalid_dates(config_fixture):
     Test that get_load_profile returns a default profile for valid but empty input.
     """
     li = LoadInterface(config_fixture, 3600)
+
+
+def test_get_load_profile_faults_on_empty_openhab_data(config_fixture):
+    """
+    Test that get_load_profile enters fault state instead of using mock defaults when no data is present.
+    """
+    li = LoadInterface(config_fixture, 3600)
+    with patch.object(
+        li,
+        "_LoadInterface__fetch_historical_energy_data_from_openhab",
+        return_value=[],
+    ), patch("src.interfaces.load_interface.time.sleep"):
+        result = li.get_load_profile(24, datetime(2023, 7, 1, 0, 0))
+    assert result == []
+    assert li.fault_state is True
+
     with patch("src.interfaces.load_interface.time.sleep"), patch.object(
         li, "_LoadInterface__fetch_historical_energy_data_from_openhab", return_value=[]
     ):

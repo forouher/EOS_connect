@@ -80,6 +80,7 @@ class PvInterface:
             "source": None,
         }
         self.temp_forecast_array = self.__get_default_temperature_forecast()
+        self.fault_state = False
 
         self._update_thread = None
         self._stop_event = threading.Event()
@@ -434,21 +435,23 @@ class PvInterface:
             if not self.pv_forcast_request_error["error"]:
                 logger.debug("[PV-IF] PV forecast updated successfully")
                 self.pv_forcast_array = pv_forcast_array
+                self.fault_state = False
             elif self.pv_forcast_array == []:
-                # If there was an error and no forecast was fetched, use default values
-                logger.warning(
-                    "[PV-IF] Using default PV forecast due to previous error: %s",
+                # If there was an error and no forecast was fetched, enter fault state
+                logger.error(
+                    "[PV-IF] No PV forecast data available, entering fault state: %s",
                     self.pv_forcast_request_error["message"],
                 )
-                self.pv_forcast_array = self.__get_default_pv_forcast(
-                    self.config[0]["power"]
-                )
+                self.pv_forcast_array = []
+                self.fault_state = True
             else:
-                # If there was an error but we have a previous forecast, log it
+                # If there was an error but we have a previous forecast, keep the last known forecast
                 logger.warning(
                     "[PV-IF] Using previous PV forecast due to error: %s",
                     self.pv_forcast_request_error["message"],
                 )
+                # Keep existing pv_forcast_array and do not set fault_state to allow recovery path
+
             # Temperature forecast with minimal configuration (only needs lat/lon)
             # Works for all PV sources: Victron, Solcast, Akkudoktor, etc.
             if self.temperature_forecast_enabled:
@@ -458,18 +461,18 @@ class PvInterface:
                         tgt_value="temperature", pv_config_entry=temp_config
                     )
                     if not temp_result:  # If empty array or None due to API error
-                        logger.warning(
-                            "[PV-IF] Temperature forecast API failed - using default"
-                            + " temperature forecast (15°C)"
+                        logger.error(
+                            "[PV-IF] Temperature forecast API failed - entering fault state"
                         )
-                        self.temp_forecast_array = (
-                            self.__get_default_temperature_forecast()
-                        )
+                        self.temp_forecast_array = []
+                        self.fault_state = True
                     else:
                         self.temp_forecast_array = temp_result
+                        self.fault_state = False
                 else:
                     # lat/lon missing - already warned during config validation
-                    self.temp_forecast_array = self.__get_default_temperature_forecast()
+                    self.temp_forecast_array = []
+                    self.fault_state = True
             else:
                 logger.debug(
                     "[PV-IF] Temperature forecast disabled - using default (15°C)"

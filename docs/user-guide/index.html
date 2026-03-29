@@ -999,11 +999,12 @@ gesamtlast: 0.0</code></pre>
             <p>EOS Connect automatically sends these values in optimization requests:</p>
             <ul>
                 <li>PV forecasts (from your configured provider)</li>
-                <li>Load predictions (from historical data or default profile)</li>
+                <li>Load predictions (from historical data)</li>
                 <li>Current battery SOC</li>
                 <li>Electricity price forecasts</li>
                 <li>EVCC requirements (if configured)</li>
             </ul>
+            <p class="alert alert-warning"><strong>Resilience behavior:</strong> If battery, PV, or load inputs cannot be obtained, EOS Connect enters a fault state, sets the inverter to <em>discharge allowed</em>, and periodically retries data acquisition.</p>
 
             <h3>Troubleshooting EOS Connection</h3>
             <ul>

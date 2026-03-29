@@ -49,6 +49,7 @@ class LoadInterface:
         self.time_frame_base = time_frame_base
         self.time_zone = None
         self.request_timeout = request_timeout  # Store configurable timeout
+        self.fault_state = False
 
         logger.debug("[LOAD-IF] Initializing LoadInterface with source: %s", self.src)
         logger.debug("[LOAD-IF] Using URL: %s", self.url)
@@ -804,40 +805,13 @@ class LoadInterface:
 
         # Check if load profile contains useful values (not all zeros)
         if not load_profile or all(value == 0 for value in load_profile):
-            logger.info(
-                "[LOAD-IF] No historical data available from 7 and 14 days ago. "
-                + "This is normal for new installations - using yesterday's data as fallback. "
-                + "Load profiles will improve automatically as the system collects"
-                + " more historical data."
+            logger.error(
+                "[LOAD-IF] No historical load data available; will enter fault state"
             )
-            # Get yesterday's load profile
-            yesterday = now.replace(
-                hour=0, minute=0, second=0, microsecond=0
-            ) - timedelta(days=1)
-            yesterday_profile = self.get_load_profile_for_day(
-                yesterday, yesterday + timedelta(days=1)
-            )
+            self.fault_state = True
+            return []
 
-            # Double yesterday's profile to create 48 hours
-            if yesterday_profile and not all(value == 0 for value in yesterday_profile):
-                load_profile = yesterday_profile + yesterday_profile
-                logger.info(
-                    "[LOAD-IF] Using yesterday's consumption pattern doubled"
-                    + " for 48-hour forecast"
-                )
-            else:
-                logger.info(
-                    "[LOAD-IF] No recent consumption data available yet. "
-                    + "Using built-in default profile as temporary fallback. "
-                    + "This will automatically switch to real data as your system runs"
-                    + " and collects sensor data."
-                )
-                load_profile = self._get_default_profile()
-                logger.info(
-                    "[LOAD-IF] Temporary default profile active -"
-                    + " will improve with collected data"
-                )
-
+        self.fault_state = False
         return load_profile
 
     def get_load_profile(self, tgt_duration, start_time=None):
@@ -860,21 +834,32 @@ class LoadInterface:
         """
         if self.src == "default":
             logger.info("[LOAD-IF] Using load source default")
+            self.fault_state = False
             return self._get_default_profile()[:tgt_duration]
         if self.src in ("openhab", "homeassistant"):
             if self.load_sensor == "" or self.load_sensor is None:
                 logger.error(
-                    "[LOAD-IF] Load sensor not configured for source '%s'. Using default.",
+                    "[LOAD-IF] Load sensor not configured for source '%s'. Fault state.",
                     self.src,
                 )
-                return self._get_default_profile()[:tgt_duration]
-            return self.__create_load_profile_weekdays()
+                self.fault_state = True
+                return []
+            load_profile = self.__create_load_profile_weekdays()
+            if not load_profile:
+                logger.error(
+                    "[LOAD-IF] No load profile data available, entering fault state."
+                )
+                self.fault_state = True
+                return []
+            self.fault_state = False
+            return load_profile
 
         logger.error(
-            "[LOAD-IF] Load source '%s' currently not supported. Using default.",
+            "[LOAD-IF] Load source '%s' currently not supported. Fault state.",
             self.src,
         )
-        return self._get_default_profile()[:tgt_duration]
+        self.fault_state = True
+        return []
 
     def _get_default_profile(self):
         """
