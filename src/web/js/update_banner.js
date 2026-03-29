@@ -228,11 +228,7 @@ class UpdateBannerManager {
      * Check if current update has been dismissed
      */
     isDismissed() {
-        if (!this.currentStatus || !this.currentStatus.latest_version) {
-            return false;
-        }
-        const dismissedVersion = localStorage.getItem(this.dismissedVersionKey);
-        return dismissedVersion === this.currentStatus.latest_version;
+        return true;
     }
 
     /**
