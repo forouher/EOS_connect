@@ -212,6 +212,64 @@ class TestFroniusV2Configuration:
             assert instance.user == "myuser"
 
 
+class TestFroniusV2VerifyMode:
+    """Tests for Fronius V2 verify_mode behavior."""
+
+    @pytest.fixture
+    def fronius_instance(self):
+        config = {"address": "192.168.1.102", "type": "fronius_gen24"}
+        with patch("src.interfaces.inverters.fronius_v2.requests.Session"):
+            yield FroniusV2(config)
+
+    def test_verify_mode_correct_state(self, fronius_instance, monkeypatch):
+        monkeypatch.setattr(
+            fronius_instance,
+            "get_time_of_use",
+            lambda: [
+                {
+                    "Active": True,
+                    "ScheduleType": "CHARGE_MAX",
+                    "Power": 500,
+                    "TimeTable": {"Start": "00:00", "End": "23:59"},
+                    "Weekdays": {
+                        "Mon": True,
+                        "Tue": True,
+                        "Wed": True,
+                        "Thu": True,
+                        "Fri": True,
+                        "Sat": True,
+                        "Sun": True,
+                    },
+                }
+            ],
+        )
+        assert fronius_instance.verify_mode(2, 100, 250) is True
+
+    def test_verify_mode_mismatched_state(self, fronius_instance, monkeypatch):
+        monkeypatch.setattr(
+            fronius_instance,
+            "get_time_of_use",
+            lambda: [
+                {
+                    "Active": True,
+                    "ScheduleType": "DISCHARGE_MAX",
+                    "Power": 0,
+                    "TimeTable": {"Start": "00:00", "End": "23:59"},
+                    "Weekdays": {
+                        "Mon": True,
+                        "Tue": True,
+                        "Wed": True,
+                        "Thu": True,
+                        "Fri": True,
+                        "Sat": True,
+                        "Sun": True,
+                    },
+                }
+            ],
+        )
+        assert fronius_instance.verify_mode(2, 100, 250) is False
+
+
 class TestFroniusV2Algorithms:
     """Tests for Fronius V2 algorithm selection."""
 

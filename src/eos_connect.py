@@ -291,6 +291,8 @@ evcc_interface = EvccInterface(
     update_interval=10,
     on_charging_state_change=None,
 )
+if isinstance(inverter_interface, EvccInverter):
+    inverter_interface.set_evcc_interface(evcc_interface)
 
 # intialize the load interface
 load_interface = LoadInterface(
@@ -1185,6 +1187,61 @@ optimization_scheduler = OptimizationScheduler(
 )
 
 
+def _set_inverter_mode_by_state(
+    inverter_interface,
+    evcc_interface,
+    current_overall_state,
+    tgt_ac_charge_power,
+    tgt_dc_charge_power,
+):
+    """Set inverter mode based on overall state and verify (Fronius)."""
+    mode_text = "unknown"
+    if current_overall_state in (0, 6):
+        mode_text = "force_charge"
+    elif current_overall_state in (1, 3):
+        mode_text = "avoid_discharge"
+    elif current_overall_state in (2, 4, 5):
+        mode_text = "discharge_allowed"
+
+    if inverter_interface is not None:
+        if current_overall_state in (0, 6):
+            inverter_interface.set_mode_force_charge(tgt_ac_charge_power)
+        elif current_overall_state in (1, 3):
+            inverter_interface.set_mode_avoid_discharge()
+        elif current_overall_state in (2, 4, 5):
+            inverter_interface.api_set_max_pv_charge_rate(tgt_dc_charge_power)
+            inverter_interface.set_mode_allow_discharge()
+
+        if mode_text != "unknown":
+            inverter_interface.set_external_battery_mode(mode_text)
+
+        try:
+            verified = inverter_interface.verify_mode(
+                current_overall_state,
+                tgt_ac_charge_power,
+                tgt_dc_charge_power,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[Main] Inverter verify_mode exception during apply: %s", exc
+            )
+            verified = False
+
+        if not verified:
+            logger.warning(
+                "[Main] Inverter mode verification failed after set, retrying once"
+            )
+            if current_overall_state in (0, 6):
+                inverter_interface.set_mode_force_charge(tgt_ac_charge_power)
+            elif current_overall_state in (1, 3):
+                inverter_interface.set_mode_avoid_discharge()
+            elif current_overall_state in (2, 4, 5):
+                inverter_interface.api_set_max_pv_charge_rate(tgt_dc_charge_power)
+                inverter_interface.set_mode_allow_discharge()
+
+    return mode_text
+
+
 def change_control_state():
     """
     Adjusts the control state of the inverter based on the current overall state.
@@ -1202,18 +1259,6 @@ def change_control_state():
         bool: True if the state was changed recently and an action was performed,
               False otherwise.
     """
-    inverter_fronius_en = False
-    inverter_evcc_en = False
-    # Check if we have an active inverter (Fronius) or if EVCC/display-only mode is enabled
-    if inverter_interface is not None:
-        if isinstance(inverter_interface, EvccInverter):
-            inverter_evcc_en = True
-        elif isinstance(inverter_interface, NullInverter):
-            inverter_evcc_en = True
-        else:
-            # Real inverter (Fronius, Victron, etc.)
-            inverter_fronius_en = True
-
     current_overall_state = base_control.get_current_overall_state_number()
     current_overall_state_text = base_control.get_current_overall_state()
 
@@ -1280,84 +1325,45 @@ def change_control_state():
     # Check if the overall state of the inverter was changed recently and consume the event
     if base_control.was_overall_state_changed_recently(consume=True):
         logger.debug("[Main] Overall state changed recently")
-        # MODE_CHARGE_FROM_GRID
-        if current_overall_state == 0:
-            if inverter_fronius_en:
-                inverter_interface.set_mode_force_charge(tgt_ac_charge_power)
-            elif inverter_evcc_en:
-                evcc_interface.set_external_battery_mode("force_charge")
+
+        mode_text = _set_inverter_mode_by_state(
+            inverter_interface,
+            evcc_interface,
+            current_overall_state,
+            tgt_ac_charge_power,
+            tgt_dc_charge_power,
+        )
+
+        if current_overall_state >= 0:
             logger.info(
-                "[Main] Inverter mode set to %s with %s W (_____|||||_____)",
+                "[Main] Inverter mode set to %s (%s) with AC %s W / DC %s W",
                 current_overall_state_text,
+                mode_text,
                 tgt_ac_charge_power,
+                tgt_dc_charge_power,
             )
-        # MODE_AVOID_DISCHARGE
-        elif current_overall_state == 1:
-            if inverter_fronius_en:
-                inverter_interface.set_mode_avoid_discharge()
-            elif inverter_evcc_en:
-                evcc_interface.set_external_battery_mode("avoid_discharge")
-            logger.info(
-                "[Main] Inverter mode set to %s (_____-----_____)",
-                current_overall_state_text,
-            )
-        # MODE_DISCHARGE_ALLOWED
-        elif current_overall_state == 2:
-            if inverter_fronius_en:
-                inverter_interface.api_set_max_pv_charge_rate(tgt_dc_charge_power)
-                inverter_interface.set_mode_allow_discharge()
-            elif inverter_evcc_en:
-                evcc_interface.set_external_battery_mode("discharge_allowed")
-            logger.info(
-                "[Main] Inverter mode set to %s (_____+++++_____)",
-                current_overall_state_text,
-            )
-        # MODE_AVOID_DISCHARGE_EVCC_FAST
-        elif current_overall_state == 3:
-            if inverter_fronius_en:
-                inverter_interface.set_mode_avoid_discharge()
-            elif inverter_evcc_en:
-                evcc_interface.set_external_battery_mode("avoid_discharge")
-            logger.info(
-                "[Main] Inverter mode set to %s (_____+---+_____)",
-                current_overall_state_text,
-            )
-        # MODE_DISCHARGE_ALLOWED_EVCC_PV
-        elif current_overall_state == 4:
-            if inverter_fronius_en:
-                inverter_interface.api_set_max_pv_charge_rate(tgt_dc_charge_power)
-                inverter_interface.set_mode_allow_discharge()
-            elif inverter_evcc_en:
-                evcc_interface.set_external_battery_mode("discharge_allowed")
-            logger.info(
-                "[Main] Inverter mode set to %s (_____-+++-_____)",
-                current_overall_state_text,
-            )
-        # MODE_DISCHARGE_ALLOWED_EVCC_MIN_PV
-        elif current_overall_state == 5:
-            if inverter_fronius_en:
-                inverter_interface.api_set_max_pv_charge_rate(tgt_dc_charge_power)
-                inverter_interface.set_mode_allow_discharge()
-            elif inverter_evcc_en:
-                evcc_interface.set_external_battery_mode("discharge_allowed")
-            logger.info(
-                "[Main] Inverter mode set to %s (_____+-+-+_____)",
-                current_overall_state_text,
-            )
-        # MODE_CHARGE_FROM_GRID_EVCC_FAST
-        elif current_overall_state == 6:
-            if inverter_fronius_en:
-                inverter_interface.set_mode_force_charge(tgt_ac_charge_power)
-            elif inverter_evcc_en:
-                evcc_interface.set_external_battery_mode("force_charge")
-            logger.info(
-                "[Main] Inverter mode set to %s with %s W (_____|---|_____)",
-                current_overall_state_text,
-                tgt_ac_charge_power,
-            )
-        elif current_overall_state < 0:
+        else:
             logger.warning("[Main] Inverter mode not initialized yet")
         return True
+
+    # Verify inverter mode even when no overall state change detected.
+    if inverter_interface is not None:
+        try:
+            if not inverter_interface.verify_mode(
+                current_overall_state, tgt_ac_charge_power, tgt_dc_charge_power
+            ):
+                logger.warning(
+                    "[Main] Inverter mode mismatch detected, reapplying expected mode"
+                )
+                _set_inverter_mode_by_state(
+                    inverter_interface,
+                    evcc_interface,
+                    current_overall_state,
+                    tgt_ac_charge_power,
+                    tgt_dc_charge_power,
+                )
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.error("[Main] Inverter verify_mode exception: %s", exc)
 
     # Log the current state if no recent changes were made
     if datetime.now().minute % 5 == 0 and datetime.now().second == 0:

@@ -594,6 +594,62 @@ class FroniusV2(BaseInverter):
                 raise RuntimeError(f"failed to set {expected_write_success}")
         return response
 
+    def _mode_from_timeofuse(self, timeofuse_list):
+        """Infer active mode from inverter time-of-use configuration."""
+        if not timeofuse_list or not isinstance(timeofuse_list, list):
+            return "unknown"
+
+        for entry in timeofuse_list:
+            if not entry.get("Active", False):
+                continue
+            schedule_type = str(entry.get("ScheduleType", "")).upper()
+            if schedule_type == "DISCHARGE_MAX":
+                return "avoid_discharge"
+            if schedule_type == "CHARGE_MAX":
+                return "discharge_allowed"
+            if schedule_type == "CHARGE_MIN":
+                return "force_charge"
+
+        return "unknown"
+
+    def verify_mode(self, overall_state, ac_charge_power, dc_charge_power) -> bool:
+        """Check Fronius mode configuration and return whether it matches expected."""
+        expected_mode = "unknown"
+        if overall_state in (1, 3):
+            expected_mode = "avoid_discharge"
+        elif overall_state in (2, 4, 5):
+            expected_mode = "discharge_allowed"
+        elif overall_state in (0, 6):
+            expected_mode = "force_charge"
+        else:
+            return True
+
+        try:
+            configured = self.get_time_of_use()
+        except Exception as error:  # pylint: disable=broad-exception-caught
+            logger.warning(
+                "[Inverter] Failed to read time of use mode for verification: %s",
+                error,
+            )
+            return False
+
+        if configured is None:
+            logger.warning("[Inverter] Could not verify mode: time of use read returned None")
+            return False
+
+        actual_mode = self._mode_from_timeofuse(configured)
+
+        if actual_mode != expected_mode:
+            logger.warning(
+                "[Inverter] Mode mismatch: expected '%s', actual '%s'",
+                expected_mode,
+                actual_mode,
+            )
+            return False
+
+        logger.debug("[Inverter] Mode verification passed: %s", expected_mode)
+        return True
+
     def get_capacity(self):
         """Get the full and raw capacity of the battery in Wh."""
         if self.capacity >= 0:

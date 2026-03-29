@@ -23,9 +23,25 @@ class EvccInverter(BaseInverter):
         """Initialize with minimal config."""
         super().__init__(config)
         self.is_authenticated: bool = False
+        self.evcc_interface = None
         logger.info(
             "[EvccInverter] Initialized in EVCC external control mode (delegating to EvccInterface)"
         )
+
+    def set_evcc_interface(self, evcc_interface):
+        """Wire the EvccInterface object for external mode control."""
+        self.evcc_interface = evcc_interface
+
+    def set_external_battery_mode(self, mode: str) -> bool:
+        """Delegate external battery mode to the linked EvccInterface."""
+        if self.evcc_interface is None:
+            logger.warning(
+                "[EvccInverter] cannot set external battery mode: no evcc_interface linked"
+            )
+            return False
+        logger.debug("[EvccInverter] Setting external battery mode to %s", mode)
+        self.evcc_interface.set_external_battery_mode(mode)
+        return True
 
     def initialize(self):
         """No initialization needed - EVCC handles this externally."""

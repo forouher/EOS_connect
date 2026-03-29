@@ -130,3 +130,21 @@ class BaseInverter(ABC):
     def shutdown(self):
         """Standard-Shutdown (kann überschrieben werden)."""
         self.disconnect()
+
+    # --- Verification helper ---
+
+    def verify_mode(self, overall_state, ac_charge_power, dc_charge_power) -> bool:
+        """Verify whether inverter is still in the expected mode.
+
+        This default is a no-op; inverter-specific classes may override.
+        """
+        return True
+
+    def set_external_battery_mode(self, mode: str) -> bool:
+        """Set external battery mode (e.g. for EVCC)."""
+        logger.debug(
+            "[%s] set_external_battery_mode(%s) called (default no-op)",
+            self.inverter_type,
+            mode,
+        )
+        return True
