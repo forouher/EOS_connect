@@ -3,14 +3,122 @@ This module provides the ConfigManager class for managing configuration settings
 of the application. The configuration settings are stored in a 'config.yaml' file.
 """
 
+import copy
+import json
 import os
-import sys
 import logging
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
+from ruamel.yaml.error import YAMLError
 
 logger = logging.getLogger("__main__")
 logger.info("[Config] loading module ")
+
+
+# Data directory persistence (#287).
+#
+# A container without a volume on /app/data loses eos_connect.db on every recreate,
+# while the bind-mounted config.yaml survives — so the next start re-migrates it and
+# resurrects pre-database settings. Undetectable after the fact, hence this check.
+# Everything below fails closed: unclassifiable means "unknown", never "ephemeral",
+# because a false alarm costs more than a missed warning.
+
+_MOUNTINFO_PATH = "/proc/self/mountinfo"  # module-level so tests can repoint it
+_CONTAINER_ROOT_FSTYPES = frozenset({"overlay", "overlayfs"})
+_RAM_BACKED_FSTYPES = frozenset({"tmpfs", "ramfs"})
+
+# mountinfo octal-escapes these characters in mount points.
+_MOUNTINFO_ESCAPES = (("\\040", " "), ("\\011", "\t"), ("\\012", "\n"), ("\\134", "\\"))
+
+
+def _fstype_for_path(path):
+    """Filesystem type of the mount *path* resolves onto, or None if unknowable.
+
+    Longest-prefix match over ``/proc/self/mountinfo``. Diagnostic only — callers
+    treat None as "no opinion", so a parse failure never changes a verdict.
+    """
+    try:
+        target = os.path.realpath(path)
+    except OSError:
+        return None
+
+    best_len, best_type = -1, None
+    try:
+        with open(_MOUNTINFO_PATH, "r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                fields = line.split()
+                if len(fields) < 8:
+                    continue
+                # Optional fields ("shared:1", ...) are variable length and end at a
+                # lone "-"; fs type is the token after it. Searching from index 6
+                # keeps a mount point from being read as the separator.
+                try:
+                    separator = fields.index("-", 6)
+                except ValueError:
+                    continue
+                if separator + 1 >= len(fields):
+                    continue
+                mount_point = fields[4]
+                for escape, literal in _MOUNTINFO_ESCAPES:
+                    mount_point = mount_point.replace(escape, literal)
+                if mount_point == target or target.startswith(
+                    mount_point.rstrip("/") + "/"
+                ):
+                    # >= not >: shadowed mounts are listed in order, last one wins.
+                    if len(mount_point) >= best_len:
+                        best_len, best_type = len(mount_point), fields[separator + 1]
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
+    return best_type
+
+
+def _in_container():
+    """True when running inside an OCI container (Docker, Podman, containerd).
+
+    Not /proc/1/cgroup: under cgroup v2 a container's is typically just ``0::/``,
+    indistinguishable from a host PID 1.
+    """
+    try:
+        if os.path.exists("/.dockerenv"):  # Docker, including compose
+            return True
+        if os.environ.get("container"):  # podman, systemd-nspawn
+            return True
+        return _fstype_for_path("/") in _CONTAINER_ROOT_FSTYPES
+    except OSError:
+        return False
+
+
+def check_data_dir_persistent(data_dir):
+    """Report whether *data_dir* survives a container recreate.
+
+    Returns ``(verdict, detail)``: True on a mount of its own (bind mount, named or
+    anonymous volume), False on the container's writable layer, None if undetermined.
+
+    The verdict is a device-id comparison and nothing else. overlay2 reports the
+    merged mount's own device for a file living only in the upper layer, so
+    "different device from /" is exactly "survives a recreate" for every mount kind.
+    """
+    try:
+        data_dev = os.stat(data_dir).st_dev
+        root_dev = os.stat("/").st_dev
+    except OSError as exc:
+        return None, f"cannot stat {data_dir}: {exc}"
+
+    fstype = _fstype_for_path(data_dir)
+
+    if data_dev == root_dev:
+        return False, (
+            f"{data_dir} shares a device with / ({fstype or 'unknown fs'}), "
+            "so it is part of the container image layer"
+        )
+
+    detail = f"{data_dir} is on its own mount ({fstype or 'unknown fs'})"
+    if fstype in _RAM_BACKED_FSTYPES:
+        # Deliberately not a veto: from inside a container `--tmpfs /app/data` and a
+        # bind mount of a host tmpfs path (systemd puts /tmp there on many distros)
+        # are indistinguishable, and the bind mount does survive a recreate.
+        detail += " - note: RAM-backed, so it is lost when the host reboots"
+    return True, detail
 
 
 class ConfigManager:
@@ -33,478 +141,169 @@ class ConfigManager:
         self.config = self.default_config.copy()
         self.load_config()
 
+    @property
+    def data_dir(self) -> str:
+        """Resolve the persistent data directory for SQLite DB and other data files.
+
+        Resolution order:
+        1. HA addon environment -> /data/ (Supervisor owns it; nothing overrides)
+        2. ``EOS_DATA_PATH`` -> custom path
+        3. ``data_path`` in config.yaml -> custom path
+        4. Default -> ./data/ relative to application directory
+
+        Steps 2 and 3 share the ``data_path`` key: ``load_env_bootstrap`` has already
+        written the environment value over the config.yaml one by the time this runs.
+        """
+        if self.is_ha_addon:
+            return "/data"
+
+        custom = self.config.get("data_path")
+        if custom:
+            return str(custom)
+
+        return os.path.join(self.current_dir, "data")
+
+    def data_dir_persistence(self):
+        """Classify the data directory: ``"persistent"``/``"ephemeral"``/``"unknown"``.
+
+        Only ``"ephemeral"`` is actionable. Callers must treat ``"unknown"`` exactly
+        like ``"persistent"``: a wrong "unknown" costs a log line, a wrong
+        "ephemeral" costs a user's settings.
+
+        Returns:
+            Tuple of (state, detail) where detail is a short human-readable reason.
+        """
+        if self.is_ha_addon:
+            return "persistent", "/data is persisted by the Home Assistant Supervisor"
+
+        if not _in_container():
+            return "unknown", "not running in a container"
+
+        verdict, detail = check_data_dir_persistent(self.data_dir)
+        if verdict is None:
+            return "unknown", detail
+        return ("persistent" if verdict else "ephemeral"), detail
+
+    @property
+    def is_ha_addon(self) -> bool:
+        """Return True when running inside a Home Assistant add-on."""
+        return (
+            os.environ.get("HASSIO") is not None
+            or os.environ.get("HASSIO_TOKEN") is not None
+            or os.path.exists("/data/options.json")
+        )
+
+    # HA bootstrap key mapping: options.json key -> config dict key
+    _HA_BOOTSTRAP_MAP = {
+        "web_port": "eos_connect_web_port",
+        "eos_connect_web_port": "eos_connect_web_port",
+        "time_zone": "time_zone",
+        "log_level": "log_level",
+    }
+
+    # Environment variable bootstrap mapping: ENV name -> config dict key
+    _ENV_BOOTSTRAP_MAP = {
+        "EOS_WEB_PORT": "eos_connect_web_port",
+        "EOS_TIMEZONE": "time_zone",
+        "EOS_LOG_LEVEL": "log_level",
+        # data_path is in BOOTSTRAP_KEYS, so it never reaches SQLite — the path must be
+        # known before the store it points at can be opened.
+        "EOS_DATA_PATH": "data_path",
+    }
+
+    def load_ha_bootstrap(self) -> dict:
+        """Read bootstrap values from HA addon ``/data/options.json``.
+
+        Returns:
+            Dict of bootstrap key/value pairs that were applied, empty if not
+            running in HA or if options.json is missing/invalid.
+        """
+        options_path = "/data/options.json"
+        if not self.is_ha_addon or not os.path.exists(options_path):
+            return {}
+
+        try:
+            with open(options_path, "r", encoding="utf-8") as f:
+                options = json.load(f)
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning("[Config] Failed to read %s: %s", options_path, exc)
+            return {}
+
+        applied = {}
+        for opt_key, cfg_key in self._HA_BOOTSTRAP_MAP.items():
+            if opt_key in options and options[opt_key] is not None:
+                self.config[cfg_key] = options[opt_key]
+                applied[cfg_key] = options[opt_key]
+
+        if applied:
+            logger.info("[Config] Applied HA addon bootstrap values: %s", list(applied.keys()))
+        return applied
+
+    def load_env_bootstrap(self) -> dict:
+        """Read bootstrap values from environment variables.
+
+        Supports ``EOS_WEB_PORT``, ``EOS_TIMEZONE``, ``EOS_LOG_LEVEL`` and
+        ``EOS_DATA_PATH``. These take precedence over config.yaml and options.json
+        values.
+
+        Returns:
+            Dict of bootstrap key/value pairs that were applied.
+        """
+        applied = {}
+        for env_key, cfg_key in self._ENV_BOOTSTRAP_MAP.items():
+            value = os.environ.get(env_key)
+            if value:
+                # Coerce port to int
+                if cfg_key == "eos_connect_web_port":
+                    try:
+                        value = int(value)
+                    except ValueError:
+                        logger.warning("[Config] Invalid %s value: %s", env_key, value)
+                        continue
+                elif cfg_key == "data_path":
+                    # A path, never a number — must not reach the int() branch above.
+                    value = value.strip()
+                    if not value:
+                        continue
+                    if not os.path.isabs(value):
+                        logger.warning(
+                            "[Config] %s=%s is relative and resolves against the "
+                            "working directory - use an absolute path",
+                            env_key,
+                            value,
+                        )
+                self.config[cfg_key] = value
+                applied[cfg_key] = value
+
+        if applied:
+            logger.info("[Config] Applied env bootstrap values: %s", list(applied.keys()))
+        return applied
+
     def create_default_config(self):
         """
-        Creates the default configuration with comments.
+        Creates the default bootstrap configuration with comments.
+
+        Only contains the three bootstrap keys managed via config.yaml.
+        All other settings are managed through the web UI and stored in SQLite.
         """
         config = CommentedMap(
             {
-                "load": CommentedMap(
-                    {
-                        "source": "default",  # data source for load power
-                        "url": "http://homeassistant:8123",  # URL for openhab or homeassistant
-                        "access_token": "abc123",  # access token for homeassistant
-                        "load_sensor": "Load_Power",  # item / entity for load power data
-                        "car_charge_load_sensor": "Wallbox_Power",  # item / entity wallbox power
-                        # item / entity for additional load power data
-                        "additional_load_1_sensor": "additional_load_1_sensor",
-                        "additional_load_1_runtime": 0,  # runtime for additional load 1 in minutes
-                        "additional_load_1_consumption": 0,  # consumption for
-                        # additional load 1 in Wh
-                    }
-                ),
-                "eos": CommentedMap(
-                    {
-                        "source": "default",  # EOS server source - eos_server, evopt, default
-                        "server": "192.168.100.100",  # EOS or EVopt server address
-                        "port": 8503,  # port for EOS server (8503) or EVopt server (7050) - default: 8503
-                        "timeout": 180,  # Default timeout for EOS optimize request
-                        "time_frame": 3600,  # Time frame for EOS optimize request in seconds
-                        "dyn_override_discharge_allowed_pv_greater_load": False,  # Dynamic override for discharge when PV > Load
-                    }
-                ),
-                "price": CommentedMap(
-                    {
-                        "source": "default",
-                        "token": "tibberBearerToken",  # token for electricity price
-                        "fixed_price_adder_ct": 0.0,  # Describes the fixed cost addition in ct per kWh.
-                        "relative_price_multiplier": 0.00,  # Applied to (base energy price + fixed_price_adder_ct). Use a decimal (e.g., 0.05 for 5%).
-                        # 24 hours array with fixed end customer prices in ct/kWh over the day
-                        "fixed_24h_array": "10.1,10.1,10.1,10.1,10.1,23,28.23,28.23"
-                        + ",28.23,28.23,28.23,23.52,23.52,23.52,23.52,28.17,28.17,34.28,"
-                        + "34.28,34.28,34.28,34.28,28,23",
-                        "feed_in_price": 0.0,  # feed in price for the grid
-                        "negative_price_switch": False,  # switch for negative price
-                        # Smart price prediction with energyforecast.de (when primary source lacks tomorrow prices)
-                        "energyforecast_enabled": False,  # enable smart price prediction
-                        "energyforecast_token": "demo_token",  # API token from energyforecast.de
-                        "energyforecast_market_zone": "DE-LU",  # Market zone: DE-LU, AT, FR, NL, BE, PL, DK1, DK2
-                    }
-                ),
-                "battery": CommentedMap(
-                    {
-                        "source": "default",  # data source for battery soc
-                        "url": "http://homeassistant:8123",  # URL for openhab or homeassistant
-                        "soc_sensor": "battery_SOC",  # item / entity for battery SOC data
-                        "access_token": "abc123",  # access token for homeassistant
-                        "capacity_wh": 11059,
-                        "charge_efficiency": 0.88,
-                        "discharge_efficiency": 0.88,
-                        "max_charge_power_w": 5000,
-                        "min_soc_percentage": 5,
-                        "max_soc_percentage": 100,
-                        "charging_curve_enabled": True,  # enable charging curve
-                        "sensor_battery_temperature": "",  # sensor for battery temperature
-                        "price_euro_per_wh_accu": 0.0,  # price for battery in euro/Wh
-                        "price_euro_per_wh_sensor": "",  # sensor/item providing battery energy cost in €/Wh
-                        "price_calculation_enabled": False,
-                        "price_update_interval": 900,
-                        "price_history_lookback_hours": 96,
-                        "battery_power_sensor": "",
-                        "pv_power_sensor": "",
-                        "grid_power_sensor": "",
-                        "load_power_sensor": "",
-                        "price_sensor": "",
-                        "charging_threshold_w": 50.0,
-                        "grid_charge_threshold_w": 100.0,
-                    }
-                ),
-                "pv_forecast_source": CommentedMap(
-                    {
-                        # openmeteo, openmeteo_local, forecast_solar, akkudoktor
-                        "source": "akkudoktor",  # akkudoktor, openmeteo, openmeteo_local, forecast_solar, evcc, solcast, victron, default
-                        "api_key": "",  # API key for Solcast and Victron (required when source is 'solcast' or 'victron')
-                    }
-                ),
-                "pv_forecast": [
-                    CommentedMap(
-                        {
-                            "name": "myPvInstallation1",  # Placeholder for user-defined configuration name
-                            "lat": 47.5,  # Latitude for PV forecast
-                            "lon": 8.5,  # Longitude for PV forecast
-                            "azimuth": 90.0,  # Azimuth for PV forecast
-                            "tilt": 30.0,  # Tilt for PV forecast
-                            "power": 4600,  # Power of PV system in Wp
-                            "powerInverter": 5000,  # Inverter Power
-                            "inverterEfficiency": 0.9,  # Inverter Efficiency for PV forecast
-                            "horizon": "10,20,10,15",  # Horizon to calculate shading
-                            "resource_id": "",  # Resource ID for Solcast (optional, only needed for Solcast)
-                        }
-                    )
-                ],
-                "inverter": CommentedMap(
-                    {
-                        "type": "default",
-                        "address": "192.168.1.12",
-                        "user": "customer",
-                        "password": "abc123",
-                        "max_grid_charge_rate": 5000,
-                        "max_pv_charge_rate": 5000,
-                    }
-                ),
-                "evcc": CommentedMap(
-                    {
-                        # URL to your evcc installation, if not used set to ""
-                        # or leave as http://yourEVCCserver:7070
-                        "url": "http://yourEVCCserver:7070",
-                    }
-                ),
-                "mqtt": CommentedMap(
-                    {
-                        "enabled": False,  # Enable MQTT - default: false
-                        # URL for MQTT server - default: mqtt://yourMQTTserver
-                        "broker": "homeassistant",
-                        "port": 1883,  # Port for MQTT server - default: 1883
-                        "user": "username",  # Username for MQTT server - default: mqtt
-                        "password": "password",  # Password for MQTT server - default: mqtt
-                        "tls": False,  # Use TLS for MQTT server - default: false
-                        # Enable Home Assistant MQTT auto discovery - default: true
-                        "ha_mqtt_auto_discovery": True,
-                        # Prefix for Home Assistant MQTT auto discovery - default: homeassistant
-                        "ha_mqtt_auto_discovery_prefix": "homeassistant",
-                    }
-                ),
-                "refresh_time": 3,  # Default refresh time in minutes
-                "time_zone": "Europe/Berlin",  # Add default time zone
-                "eos_connect_web_port": 8081,  # Default port for EOS connect server
-                "log_level": "info",  # Default log level
-                "request_timeout": 10,  # Request timeout for Home Assistant and OpenHAB API calls in seconds (5-60)
+                "eos_connect_web_port": 8081,
+                "time_zone": "Europe/Berlin",
+                "log_level": "info",
             }
         )
-        # load configuration
-        config.yaml_set_comment_before_after_key("load", before="Load configuration")
-        config["load"].yaml_add_eol_comment(
-            "Data source for load power - openhab, homeassistant,"
-            + " default (using a static load profile)",
-            "source",
-        )
-        config["load"].yaml_add_eol_comment(
-            "access token for homeassistant (optional)", "access_token"
-        )
-        config["load"].yaml_add_eol_comment(
-            "URL for openhab or homeassistant"
-            + " (e.g. http://openhab:8080 or http://homeassistant:8123)",
-            "url",
-        )
-        config["load"].yaml_add_eol_comment(
-            "item / entity for load power data in watts", "load_sensor"
-        )
-        config["load"].yaml_add_eol_comment(
-            "item / entity for wallbox power data in watts. "
-            + '(If not needed, set to `load.car_charge_load_sensor: ""`)',
-            "car_charge_load_sensor",
-        )
-        config["load"].yaml_add_eol_comment(
-            "item / entity for additional load power data in watts."
-            + ' (If not needed set to `additional_load_1_sensor: ""`)',
-            "additional_load_1_sensor",
-        )
-        config["load"].yaml_add_eol_comment(
-            "runtime for additional load 1 in minutes - default: 0"
-            + ' (If not needed set to `additional_load_1_sensor: ""`)',
-            "additional_load_1_runtime",
-        )
-        config["load"].yaml_add_eol_comment(
-            "consumption for additional load 1 in Wh - default: 0"
-            + ' (If not needed set to `additional_load_1_sensor: ""`)',
-            "additional_load_1_consumption",
-        )
-
-        # eos configuration
-        config.yaml_set_comment_before_after_key(
-            "eos", before="EOS server configuration"
-        )
-        config["eos"].yaml_add_eol_comment(
-            "EOS server source - eos_server, evopt, default (default uses eos_server)",
-            "source",
-        )
-        config["eos"].yaml_add_eol_comment("EOS or EVopt server address", "server")
-        config["eos"].yaml_add_eol_comment(
-            "port for EOS server (8503) or EVopt server (7050) - default: 8503",
-            "port",
-        )
-        config["eos"].yaml_add_eol_comment(
-            "time frame for EOS optimize request in seconds - default: 3600",
-            "time_frame",
-        )
-        config["eos"].yaml_add_eol_comment(
-            "timeout for EOS optimize request in seconds - default: 180", "timeout"
-        )
-        config["eos"].yaml_add_eol_comment(
-            "Dynamic discharge override when PV forecast is greater than load - default: false"
-            + " - when enabled, discharge is allowed even if optimizer says avoid discharge,"
-            + " if pv_forecast > load in current time slot",
-            "dyn_override_discharge_allowed_pv_greater_load",
-        )
-        # price configuration
-        config.yaml_set_comment_before_after_key(
-            "price", before="Electricity price configuration"
-        )
-        config["price"].yaml_add_eol_comment(
-            "data source for electricity price tibber, smartenergy_at, stromligning,"
-            + " fixed_24h, default (default uses akkudoktor)",
-            "source",
-        )
-        config["price"].yaml_add_eol_comment(
-            "Token for electricity price. For Stromligning use supplierId/productId[/groupId].",
-            "token",
-        )
-        config["price"].yaml_add_eol_comment(
-            "fixed cost addition in ct per kWh", "fixed_price_adder_ct"
-        )
-        config["price"].yaml_add_eol_comment(
-            "relative cost addition as a multiplier in %. Applied to (base energy price"
-            + " + fixed_price_adder_ct). Use a decimal (e.g., 0.05 for 5%).",
-            "relative_price_multiplier",
-        )
-        config["price"].yaml_add_eol_comment(
-            "24 hours array with fixed end customer prices in ct/kWh over the day",
-            "fixed_24h_array",
-        )
-        config["price"].yaml_add_eol_comment(
-            "feed in price for the grid in €/kWh", "feed_in_price"
-        )
-        config["price"].yaml_add_eol_comment(
-            "switch for no payment if negative stock price is given",
-            "negative_price_switch",
-        )
-        # battery configuration
-        config.yaml_set_comment_before_after_key(
-            "battery", before="battery configuration"
-        )
-        config["battery"].yaml_add_eol_comment(
-            "Data source for battery soc - openhab, homeassistant, default", "source"
-        )
-        config["battery"].yaml_add_eol_comment(
-            "URL for openhab or homeassistant"
-            + " (e.g. http://openhab:8080 or http://homeassistant:8123)",
-            "url",
-        )
-        config["battery"].yaml_add_eol_comment(
-            "item / entity for battery SOC data in [0..1]", "soc_sensor"
-        )
-        config["battery"].yaml_add_eol_comment(
-            "access token for homeassistant (optional)", "access_token"
-        )
-        config["battery"].yaml_add_eol_comment("battery capacity in Wh", "capacity_wh")
-        config["battery"].yaml_add_eol_comment(
-            "efficiency for charging the battery in [0..1]", "charge_efficiency"
-        )
-        config["battery"].yaml_add_eol_comment(
-            "efficiency for discharging the battery in [0..1]", "discharge_efficiency"
-        )
-        config["battery"].yaml_add_eol_comment(
-            "max charging power in W", "max_charge_power_w"
-        )
-        config["battery"].yaml_add_eol_comment(
-            "URL for battery soc in %", "min_soc_percentage"
-        )
-        config["battery"].yaml_add_eol_comment(
-            "URL for battery soc in %", "max_soc_percentage"
-        )
-        config["battery"].yaml_add_eol_comment(
-            "price for battery in euro/Wh - default: 0.0", "price_euro_per_wh_accu"
-        )
-        config["battery"].yaml_add_eol_comment(
-            "sensor/item providing the battery price (€/Wh) - HA entity or OpenHAB item",
-            "price_euro_per_wh_sensor",
-        )
-        config["battery"].yaml_add_eol_comment(
-            "enabling charging curve for controlled charging power"
-            + " according to the SOC (default: true)",
-            "charging_curve_enabled",
-        )
-        config["battery"].yaml_add_eol_comment(
-            "sensor for battery temperature in °C", "sensor_battery_temperature"
-        )
-        config["battery"].yaml_add_eol_comment(
-            "enable dynamic battery price calculation based on history",
-            "price_calculation_enabled",
-        )
-        config["battery"].yaml_add_eol_comment(
-            "interval for price update in seconds - default: 900 (15 min)",
-            "price_update_interval",
-        )
-        config["battery"].yaml_add_eol_comment(
-            "hours of history to analyze for price calculation - default: 96",
-            "price_history_lookback_hours",
-        )
-        config["battery"].yaml_add_eol_comment(
-            "HA entity ID or OpenHAB item for battery power in W (positive = charging)",
-            "battery_power_sensor",
-        )
-        config["battery"].yaml_add_eol_comment(
-            "HA entity ID or OpenHAB item for PV power in W", "pv_power_sensor"
-        )
-        config["battery"].yaml_add_eol_comment(
-            "HA entity ID or OpenHAB item for grid power in W (positive = import)",
-            "grid_power_sensor",
-        )
-        config["battery"].yaml_add_eol_comment(
-            "HA entity ID or OpenHAB item for load power in W", "load_power_sensor"
-        )
-        config["battery"].yaml_add_eol_comment(
-            "HA entity ID or OpenHAB item for electricity price in €/kWh or ct/kWh",
-            "price_sensor",
-        )
-        config["battery"].yaml_add_eol_comment(
-            "minimum battery power to consider as charging (W)", "charging_threshold_w"
-        )
-        config["battery"].yaml_add_eol_comment(
-            "minimum grid surplus to consider as grid charging (W)",
-            "grid_charge_threshold_w",
-        )
-
-        # pv forecast source configuration
-        config.yaml_set_comment_before_after_key(
-            "pv_forecast_source", before="pv forecast source configuration"
-        )
-        config["pv_forecast_source"].yaml_add_eol_comment(
-            "data source for solar forecast providers akkudoktor, openmeteo, openmeteo_local,"
-            + " forecast_solar, evcc, solcast, victron, default (default uses akkudoktor)",
-            "source",
-        )
-        config["pv_forecast_source"].yaml_add_eol_comment(
-            "API key for Solcast and Victron (required only when source is 'solcast' or 'victron')",
-            "api_key",
-        )
-
-        # pv forecast configuration
-        config.yaml_set_comment_before_after_key(
-            "pv_forecast",
-            before="List of PV forecast configurations."
-            + " Add multiple entries as needed.\nSee Akkudoktor API "
-            + "(https://api.akkudoktor.net/#/pv%20generation%20calculation/getForecast) "
-            + "for more details.",
-        )
-        for index, pv_config in enumerate(config["pv_forecast"]):
-            config["pv_forecast"][index].yaml_add_eol_comment(
-                "User-defined identifier for the PV installation,"
-                + " have to be unique if you use more installations",
-                "name",
-            )
-            config["pv_forecast"][index].yaml_add_eol_comment(
-                "Latitude for PV forecast", "lat"
-            )
-            config["pv_forecast"][index].yaml_add_eol_comment(
-                "Longitude for PV forecast", "lon"
-            )
-            config["pv_forecast"][index].yaml_add_eol_comment(
-                "Azimuth for PV forecast", "azimuth"
-            )
-            config["pv_forecast"][index].yaml_add_eol_comment(
-                "Tilt for PV forecast", "tilt"
-            )
-            config["pv_forecast"][index].yaml_add_eol_comment(
-                "Power for PV forecast", "power"
-            )
-            config["pv_forecast"][index].yaml_add_eol_comment(
-                "Power Inverter for PV forecast", "powerInverter"
-            )
-            config["pv_forecast"][index].yaml_add_eol_comment(
-                "Inverter Efficiency for PV forecast",
-                "inverterEfficiency",
-            )
-            config["pv_forecast"][index].yaml_add_eol_comment(
-                "Horizon to calculate shading, up to 360 values"
-                + " to describe the shading situation for your PV.",
-                "horizon",
-            )
-            config["pv_forecast"][index].yaml_add_eol_comment(
-                "Resource ID for Solcast API (optional, only needed when using Solcast provider)",
-                "resource_id",
-            )
-        # inverter configuration
-        config.yaml_set_comment_before_after_key(
-            "inverter", before="Inverter configuration"
-        )
-        config["inverter"].yaml_add_eol_comment(
-            "Type of inverter - fronius_gen24, fronius_gen24_legacy, evcc, default"
-            + " (default will disable inverter control -"
-            + " only displaying the target state) - preset: default",
-            "type",
-        )
-        config["inverter"].yaml_add_eol_comment(
-            "Address of the inverter (fronius_gen24/fronius_gen24_legacy only)",
-            "address",
-        )
-        config["inverter"].yaml_add_eol_comment(
-            "Username for the inverter (fronius_gen24/fronius_gen24_legacy only)",
-            "user",
-        )
-        config["inverter"].yaml_add_eol_comment(
-            "Password for the inverter (fronius_gen24/fronius_gen24_legacy only)",
-            "password",
-        )
-        config["inverter"].yaml_add_eol_comment(
-            "Max inverter grid charge rate in W - default: 5000", "max_grid_charge_rate"
-        )
-        config["inverter"].yaml_add_eol_comment(
-            "Max inverter PV charge rate in W - default: 5000", "max_pv_charge_rate"
-        )
-        config["inverter"].yaml_add_eol_comment(
-            "Access token for Home Assistant (homeassistant only)", "token"
-        )
-        config["inverter"].yaml_add_eol_comment(
-            "URL for Home Assistant (homeassistant only)", "url"
-        )
-        # evcc configuration
-        config.yaml_set_comment_before_after_key("evcc", before="EVCC configuration")
-        config["evcc"].yaml_add_eol_comment(
-            '# URL to your evcc installation, if not used set to ""'
-            + " or leave as http://yourEVCCserver:7070",
-            "url",
-        )
-        # mqtt configuration
-        config.yaml_set_comment_before_after_key("mqtt", before="MQTT configuration")
-        config["mqtt"].yaml_add_eol_comment("Enable MQTT - default: false", "enabled")
-        config["mqtt"].yaml_add_eol_comment(
-            "URL for MQTT server - default: mqtt://yourMQTTserver", "broker"
-        )
-        config["mqtt"].yaml_add_eol_comment(
-            "Port for MQTT server - default: 1883", "port"
-        )
-        config["mqtt"].yaml_add_eol_comment(
-            "Username for MQTT server - default: mqtt", "user"
-        )
-        config["mqtt"].yaml_add_eol_comment(
-            "Password for MQTT server - default: mqtt", "password"
-        )
-        config["mqtt"].yaml_add_eol_comment(
-            "Use TLS for MQTT server - default: false", "tls"
-        )
-        config["mqtt"].yaml_add_eol_comment(
-            "Enable Home Assistant MQTT auto discovery - default: true",
-            "ha_mqtt_auto_discovery",
-        )
-        config["mqtt"].yaml_add_eol_comment(
-            "Prefix for Home Assistant MQTT auto discovery - default: homeassistant",
-            "ha_mqtt_auto_discovery_prefix",
-        )
-
-        # refresh time configuration
         config.yaml_add_eol_comment(
-            "Default refresh time of EOS connect in minutes - default: 3",
-            "refresh_time",
-        )
-        # time zone configuration
-        config.yaml_add_eol_comment(
-            "Default time zone - default: Europe/Berlin", "time_zone"
-        )
-        # eos connect web port configuration
-        config.yaml_add_eol_comment(
-            "Default port for EOS connect server - default: 8081",
+            "Port for EOS Connect web server - default: 8081",
             "eos_connect_web_port",
         )
-        # loglevel configuration
         config.yaml_add_eol_comment(
-            "Log level for the application : debug, info, warning, error - default: info",
-            "log_level",
+            "Time zone for the application - default: Europe/Berlin",
+            "time_zone",
         )
-        # request timeout configuration
         config.yaml_add_eol_comment(
-            "Request timeout for Home Assistant and OpenHAB API calls in seconds (5-120) - default: 10",
-            "request_timeout",
+            "Log level: debug, info, warning, error - default: info",
+            "log_level",
         )
         return config
 
@@ -512,101 +311,89 @@ class ConfigManager:
         """
         Reads the configuration from 'config.yaml' file located in the current directory.
         If the file exists, it loads the configuration values.
-        If the file does not exist, it creates a new 'config.yaml' file with default values and
-        prompts the user to restart the server after configuring the settings.
+        If the file does not exist, defaults are used and the setup wizard will
+        guide the user through initial configuration.
+
+        When running as an HA addon, bootstrap values from ``/data/options.json``
+        override the corresponding config.yaml values. Environment variables
+        (``EOS_WEB_PORT``, ``EOS_TIMEZONE``, ``EOS_LOG_LEVEL``) take highest
+        precedence.
         """
-        if os.path.exists(self.config_file):
-            with open(self.config_file, "r", encoding="utf-8") as f:
-                self.config.update(self.yaml.load(f))
-            self.check_eos_timeout_and_refreshtime()
-            self.check_energyforecast_config()
+        # isfile, not exists: the compose file used to bind-mount the gitignored
+        # ./src/config.yaml, so a clean clone made Docker create a *directory* here and
+        # open() raised IsADirectoryError at import time. Nothing in a bootstrap file is
+        # worth a hard crash — every key has a default and the database is authoritative.
+        if os.path.isfile(self.config_file):
+            try:
+                with open(self.config_file, "r", encoding="utf-8") as f:
+                    loaded = self.yaml.load(f)
+                if loaded:
+                    self.config.update(loaded)
+            except (OSError, YAMLError) as exc:
+                logger.warning(
+                    "[Config] Could not read %s (%s) - using defaults, "
+                    "settings from the database still apply",
+                    self.config_file,
+                    exc,
+                )
         else:
-            self.write_config()
-            print("Config file not found. Created a new one with default values.")
-            print(
-                "Please restart the server after configuring the settings in config.yaml"
+            if os.path.exists(self.config_file):
+                logger.warning(
+                    "[Config] %s exists but is not a file - ignoring it. If this is a "
+                    "directory, a docker volume mount created it; remove the "
+                    "config.yaml bind mount and use EOS_WEB_PORT / EOS_TIMEZONE / "
+                    "EOS_LOG_LEVEL instead.",
+                    self.config_file,
+                )
+            if self.is_ha_addon:
+                logger.info(
+                    "[Config] No config.yaml found (HA addon mode) - using defaults"
+                )
+            else:
+                logger.info(
+                    "[Config] No config.yaml found - using defaults, "
+                    "setup wizard will guide initial configuration"
+                )
+
+        # In HA addon mode, bootstrap values from options.json override config.yaml
+        self.load_ha_bootstrap()
+        # Environment variables take highest precedence
+        self.load_env_bootstrap()
+
+        # If config.yaml doesn't exist, create it with defaults
+        # (for fresh install only, not for HA addon mode).
+        # exists(), not isfile(): if a directory occupies the path there is nothing
+        # useful to write and open(..., "w") would raise.
+        if not os.path.exists(self.config_file) and not self.is_ha_addon:
+            logger.info(
+                "[Config] Creating new config.yaml with bootstrap defaults at %s",
+                self.config_file,
             )
-            sys.exit(0)
+            self.write_config()
 
     def write_config(self):
         """
         Writes the configuration to 'config.yaml' file located in the current directory.
+
+        Never fatal: config.yaml holds bootstrap values only, so a read-only bind mount
+        must not stop startup.
+
+        A ``data_path`` from ``EOS_DATA_PATH`` is not written out — it describes how the
+        container was started, and persisting it would outlive the variable. One put in
+        config.yaml by hand is preserved.
         """
         logger.info("[Config] writing config file")
-        with open(self.config_file, "w", encoding="utf-8") as config_file_handle:
-            self.yaml.dump(self.config, config_file_handle)
-
-    def check_eos_timeout_and_refreshtime(self):
-        """
-        Check if the eos timeout is smaller than the refresh time
-        and validate request_timeout range
-        """
-        eos_timeout_seconds = self.config["eos"]["timeout"]
-        refresh_time_seconds = self.config["refresh_time"] * 60
-
-        if eos_timeout_seconds > refresh_time_seconds:
-            logger.error(
-                (
-                    "[Config] EOS timeout (%s s) is greater than the refresh time (%s s)."
-                    " Please adjust the settings."
-                ),
-                eos_timeout_seconds,
-                refresh_time_seconds,
-            )
-            sys.exit(0)
-
-        # Validate and clamp request_timeout to 5-120 seconds range
-        request_timeout = self.config.get("request_timeout", 10)
-        if request_timeout < 5:
+        to_dump = self.config
+        if os.environ.get("EOS_DATA_PATH") and "data_path" in to_dump:
+            to_dump = copy.deepcopy(self.config)  # deepcopy keeps CommentedMap comments
+            to_dump.pop("data_path", None)
+        try:
+            with open(self.config_file, "w", encoding="utf-8") as config_file_handle:
+                self.yaml.dump(to_dump, config_file_handle)
+        except OSError as exc:
             logger.warning(
-                "[Config] request_timeout (%s s) is below minimum (5 s). Setting to 5 s.",
-                request_timeout,
+                "[Config] Could not write %s (%s) - continuing with the values "
+                "already loaded",
+                self.config_file,
+                exc,
             )
-            self.config["request_timeout"] = 5
-        elif request_timeout > 120:
-            logger.warning(
-                "[Config] request_timeout (%s s) exceeds maximum (120 s). Setting to 120 s.",
-                request_timeout,
-            )
-            self.config["request_timeout"] = 120
-
-    def check_energyforecast_config(self):
-        """
-        Validate energyforecast.de configuration when enabled.
-
-        If energyforecast_enabled is True:
-        - Requires valid token (not empty or "demo_token")
-        - Requires valid market_zone from supported list
-        """
-        price_config = self.config.get("price", {})
-
-        if not price_config.get("energyforecast_enabled", False):
-            # Not enabled, no validation needed
-            return
-
-        token = price_config.get("energyforecast_token", "")
-        market_zone = price_config.get("energyforecast_market_zone", "")
-
-        # Supported market zones per energyforecast.de API
-        valid_zones = ["DE-LU", "AT", "FR", "NL", "BE", "PL", "DK1", "DK2"]
-
-        # Validate token
-        if not token or token == "demo_token":
-            logger.warning(
-                "[Config] energyforecast_enabled is True, but token is '%s'. "
-                "Fallback will use demo token (limited functionality). "
-                "Get a free API key from https://www.energyforecast.de/api_keys",
-                token if token else "(empty)",
-            )
-
-        # Validate market zone
-        if market_zone not in valid_zones:
-            logger.error(
-                "[Config] Invalid energyforecast_market_zone '%s'. "
-                "Must be one of: %s. Please correct in config.yaml",
-                market_zone,
-                ", ".join(valid_zones),
-            )
-            # Set to default to prevent crash
-            self.config["price"]["energyforecast_market_zone"] = "DE-LU"
-            logger.warning("[Config] Defaulting to market zone: DE-LU")

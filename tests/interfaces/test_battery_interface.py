@@ -668,6 +668,150 @@ def test_get_max_charge_power_dyn_temperature_sensor_configured(default_config):
         assert bi.max_charge_power_dyn > 0
 
 
+def test_ssl_ignore_config_read(default_config):
+    """Test that ssl_ignore is read from config and stored."""
+    test_config = default_config.copy()
+    test_config["ssl_ignore"] = True
+    with patch.object(BatteryInterface, "start_update_service", return_value=None):
+        bi = BatteryInterface(test_config)
+        assert bi.ssl_ignore is True
+
+    test_config["ssl_ignore"] = False
+    with patch.object(BatteryInterface, "start_update_service", return_value=None):
+        bi = BatteryInterface(test_config)
+        assert bi.ssl_ignore is False
+
+
+def test_ssl_ignore_default_false(default_config):
+    """Test that ssl_ignore defaults to False when not specified."""
+    test_config = default_config.copy()
+    # Don't set ssl_ignore
+    with patch.object(BatteryInterface, "start_update_service", return_value=None):
+        bi = BatteryInterface(test_config)
+        assert bi.ssl_ignore is False
+
+
+def test_openhab_request_with_ssl_ignore_false(default_config):
+    """Test OpenHAB request passes verify=True when ssl_ignore=False."""
+    test_config = default_config.copy()
+    test_config["source"] = "openhab"
+    test_config["url"] = "http://fake"
+    test_config["soc_sensor"] = "BatterySOC"
+    test_config["ssl_ignore"] = False
+    
+    bi = BatteryInterface(test_config)
+    with patch("src.interfaces.battery_interface.requests.get") as mock_get:
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"state": "80"}
+        mock_resp.raise_for_status.return_value = None
+        mock_get.return_value = mock_resp
+        bi._BatteryInterface__fetch_soc_data_unified()
+        
+        # Verify verify=True was passed
+        mock_get.assert_called_once()
+        call_kwargs = mock_get.call_args[1]
+        assert call_kwargs.get("verify") is True
+
+
+def test_openhab_request_with_ssl_ignore_true(default_config):
+    """Test OpenHAB request passes verify=False when ssl_ignore=True."""
+    test_config = default_config.copy()
+    test_config["source"] = "openhab"
+    test_config["url"] = "http://fake"
+    test_config["soc_sensor"] = "BatterySOC"
+    test_config["ssl_ignore"] = True
+    
+    bi = BatteryInterface(test_config)
+    with patch("src.interfaces.battery_interface.requests.get") as mock_get:
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"state": "80"}
+        mock_resp.raise_for_status.return_value = None
+        mock_get.return_value = mock_resp
+        bi._BatteryInterface__fetch_soc_data_unified()
+        
+        # Verify verify=False was passed
+        mock_get.assert_called_once()
+        call_kwargs = mock_get.call_args[1]
+        assert call_kwargs.get("verify") is False
+
+
+def test_homeassistant_request_with_ssl_ignore_false(default_config):
+    """Test HA request passes verify=True when ssl_ignore=False."""
+    test_config = default_config.copy()
+    test_config["source"] = "homeassistant"
+    test_config["url"] = "http://fake"
+    test_config["soc_sensor"] = "sensor.battery_soc"
+    test_config["access_token"] = "token"
+    test_config["ssl_ignore"] = False
+    
+    bi = BatteryInterface(test_config)
+    with patch("src.interfaces.battery_interface.requests.get") as mock_get:
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"state": "55"}
+        mock_resp.raise_for_status.return_value = None
+        mock_get.return_value = mock_resp
+        bi._BatteryInterface__fetch_soc_data_unified()
+        
+        # Verify verify=True was passed
+        mock_get.assert_called_once()
+        call_kwargs = mock_get.call_args[1]
+        assert call_kwargs.get("verify") is True
+
+
+def test_homeassistant_request_with_ssl_ignore_true(default_config):
+    """Test HA request passes verify=False when ssl_ignore=True."""
+    test_config = default_config.copy()
+    test_config["source"] = "homeassistant"
+    test_config["url"] = "http://fake"
+    test_config["soc_sensor"] = "sensor.battery_soc"
+    test_config["access_token"] = "token"
+    test_config["ssl_ignore"] = True
+    
+    bi = BatteryInterface(test_config)
+    with patch("src.interfaces.battery_interface.requests.get") as mock_get:
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"state": "55"}
+        mock_resp.raise_for_status.return_value = None
+        mock_get.return_value = mock_resp
+        bi._BatteryInterface__fetch_soc_data_unified()
+        
+        # Verify verify=False was passed
+        mock_get.assert_called_once()
+        call_kwargs = mock_get.call_args[1]
+        assert call_kwargs.get("verify") is False
+
+
+def test_charging_curve_disabled_triggers_callback_on_change(default_config):
+    """Disabled charging curve should still trigger max-change callback once."""
+    test_config = default_config.copy()
+    test_config["charging_curve_enabled"] = False
+    callback = MagicMock()
+
+    with patch.object(BatteryInterface, "start_update_service", return_value=None):
+        bi = BatteryInterface(test_config, on_bat_max_changed=callback)
+        bi.last_max_charge_power_dyn = 0
+        bi._BatteryInterface__get_max_charge_power_dyn()
+
+    assert bi.max_charge_power_dyn == test_config["max_charge_power_w"]
+    callback.assert_called_once()
+
+
+def test_charging_curve_disabled_updates_base_control_on_change(default_config):
+    """Disabled charging curve should update base_control with fixed max power."""
+    test_config = default_config.copy()
+    test_config["charging_curve_enabled"] = False
+    base_control_mock = MagicMock()
+
+    with patch.object(BatteryInterface, "start_update_service", return_value=None):
+        bi = BatteryInterface(test_config, base_control=base_control_mock)
+        bi.last_max_charge_power_dyn = 0
+        bi._BatteryInterface__get_max_charge_power_dyn()
+
+    base_control_mock.set_current_bat_charge_max.assert_called_once_with(
+        test_config["max_charge_power_w"]
+    )
+
+
 def test_calculate_temp_multiplier_monotonic_cold_region(fast_battery_interface):
     """Test that temp multiplier increases monotonically in cold region (-20 to 0°C)."""
     multipliers = []
@@ -789,3 +933,93 @@ def test_temp_compensation_10_5_celsius_specific(fast_battery_interface):
     assert (
         2130 < fast_battery_interface.max_charge_power_dyn < 2160
     ), f"At 10.5°C expected ~2136W, got {fast_battery_interface.max_charge_power_dyn}W"
+
+
+class TestSocConfigGuard:
+    """
+    An unreadable SOC sensor must be caught before anything tries to read it.
+
+    It used to 404 every 30 seconds, forever, with nothing in the UI connecting it to
+    a config field — the wizard had stored ``battery_SOC`` as though the user picked
+    it. The guard is deliberately scoped to the SOC sensor: ``source`` also serves the
+    temperature and battery-price sensors, which are configured independently.
+    """
+
+    def test_a_missing_sensor_is_incomplete_and_never_polls(self, default_config):
+        cfg = {**default_config, "source": "homeassistant",
+               "url": "http://ha.local:8123", "access_token": "tok", "soc_sensor": ""}
+
+        with patch.object(BatteryInterface, "start_update_service", return_value=None), \
+                patch("requests.get") as mock_get:
+            bi = BatteryInterface(cfg)
+
+            assert bi.configuration_state == "incomplete"
+            assert "no battery SOC sensor is set" in bi.configuration_message
+            assert bi.soc_source_usable is False
+            assert bi._BatteryInterface__battery_request_current_soc() == 5
+            assert not mock_get.called
+
+    def test_a_missing_token_is_incomplete(self, default_config):
+        cfg = {**default_config, "source": "homeassistant",
+               "url": "http://ha.local:8123", "access_token": "",
+               "soc_sensor": "sensor.battery_soc"}
+
+        with patch.object(BatteryInterface, "start_update_service", return_value=None):
+            bi = BatteryInterface(cfg)
+
+            assert bi.configuration_state == "incomplete"
+            assert "access token" in bi.configuration_message
+
+    def test_a_missing_url_is_incomplete(self, default_config):
+        cfg = {**default_config, "source": "openhab", "url": "",
+               "soc_sensor": "BatterySOC"}
+
+        with patch.object(BatteryInterface, "start_update_service", return_value=None):
+            bi = BatteryInterface(cfg)
+
+            assert bi.configuration_state == "incomplete"
+            assert "URL" in bi.configuration_message
+
+    def test_an_unsupported_source_is_invalid(self, default_config):
+        cfg = {**default_config, "source": "carrier_pigeon",
+               "url": "http://x", "soc_sensor": "s"}
+
+        with patch.object(BatteryInterface, "start_update_service", return_value=None):
+            bi = BatteryInterface(cfg)
+
+            assert bi.configuration_state == "invalid"
+
+    def test_a_complete_config_is_valid_and_usable(self, default_config):
+        cfg = {**default_config, "source": "homeassistant",
+               "url": "http://ha.local:8123", "access_token": "tok",
+               "soc_sensor": "sensor.battery_soc"}
+
+        with patch.object(BatteryInterface, "start_update_service", return_value=None):
+            bi = BatteryInterface(cfg)
+
+            assert bi.configuration_state == "valid"
+            assert bi.soc_source_usable is True
+
+    def test_the_default_source_is_valid_without_a_sensor(self, default_config):
+        """Nothing to read means nothing to complain about."""
+        with patch.object(BatteryInterface, "start_update_service", return_value=None):
+            bi = BatteryInterface(default_config)
+
+            assert bi.configuration_state == "valid"
+            assert bi.soc_source_usable is False
+            assert bi.configuration_message == ""
+
+    def test_the_guard_leaves_the_price_sensor_alone(self, default_config):
+        """
+        The regression this scoping exists to prevent: a remote source with a price
+        sensor and no SOC sensor is a supported setup, and must keep fetching prices.
+        """
+        cfg = {**default_config, "source": "homeassistant",
+               "url": "http://ha.local:8123", "access_token": "tok",
+               "soc_sensor": "", "price_euro_per_wh_sensor": "sensor.accu_price"}
+
+        with patch.object(BatteryInterface, "start_update_service", return_value=None):
+            bi = BatteryInterface(cfg)
+
+            assert bi.src == "homeassistant", "the source must not be downgraded"
+            assert bi.price_sensor == "sensor.accu_price"

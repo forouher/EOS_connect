@@ -265,6 +265,59 @@ def test_interface_methods_exist(eos_server_config, time_frame_base, berlin_time
         assert hasattr(interface, method)
 
 
+def test_external_evopt_with_custom_grid_limits(time_frame_base, berlin_timezone):
+    """
+    Test that external EVopt backend receives custom grid limits from config.
+    This addresses issue #268 - ensure grid limits are configurable, not hardcoded to 10kW.
+    """
+    evopt_config_with_limits = {
+        "source": "evopt",
+        "server": "localhost",
+        "port": 7050,
+        "external_evopt_max_grid_import_w": 16000,
+        "external_evopt_max_grid_export_w": 16000,
+    }
+    interface = OptimizationInterface(
+        evopt_config_with_limits, time_frame_base, berlin_timezone
+    )
+    # Verify backend has received the custom grid limits
+    assert interface.backend.max_grid_import_w == 16000
+    assert interface.backend.max_grid_export_w == 16000
+
+
+def test_external_evopt_default_grid_limits(time_frame_base, berlin_timezone):
+    """
+    Test that external EVopt backend uses inverter limits as smart defaults (5kW) when grid limits not configured.
+    """
+    evopt_config = {
+        "source": "evopt",
+        "server": "localhost",
+        "port": 7050,
+    }
+    interface = OptimizationInterface(evopt_config, time_frame_base, berlin_timezone)
+    # Verify backend defaults to inverter limits (5kW) when grid limits not configured
+    assert interface.backend.max_grid_import_w == 5000
+    assert interface.backend.max_grid_export_w == 5000
+
+
+def test_external_evopt_zero_limit_defaults_to_inverter_limits(time_frame_base, berlin_timezone):
+    """
+    Test that external EVopt backend treats 0 (from config) as "use default" and falls back to inverter limits (5kW).
+    This implements smart defaults: 0 = no explicit config value provided, use inverter limits instead.
+    """
+    evopt_config = {
+        "source": "evopt",
+        "server": "localhost",
+        "port": 7050,
+        "external_evopt_max_grid_import_w": 0,
+        "external_evopt_max_grid_export_w": 0,
+    }
+    interface = OptimizationInterface(evopt_config, time_frame_base, berlin_timezone)
+    # When user config is 0 (not set), should default to inverter limits (5kW)
+    assert interface.backend.max_grid_import_w == 5000
+    assert interface.backend.max_grid_export_w == 5000
+
+
 class DummyBackend:
     """
     A dummy backend class for testing optimization interfaces.
@@ -317,6 +370,15 @@ def test_dummy_backend_integration(monkeypatch, time_frame_base, berlin_timezone
         )
         self.time_frame_base = time_frame_base
         self.time_zone = timezone
+        self.config = config
+        self.timeout = config.get("timeout", 180)
+        self.dyn_override_discharge_allowed = config.get(
+            "dyn_override_discharge_allowed_pv_greater_load", False
+        )
+        self.pv_battery_charge_control_enabled = config.get(
+            "pv_battery_charge_control_enabled", False
+        )
+        
         if self.eos_source == "dummy":
             self.backend = DummyBackend(
                 self.base_url, self.time_frame_base, self.time_zone
@@ -324,14 +386,17 @@ def test_dummy_backend_integration(monkeypatch, time_frame_base, berlin_timezone
             self.backend_type = "dummy"
         else:
             orig_init(self, config, time_frame_base, timezone)
+        
         self.last_start_solution = None
         self.home_appliance_released = False
         self.home_appliance_start_hour = None
+        self.last_eos_request = None
         self.last_control_data = [
             {
                 "ac_charge_demand": 0,
                 "dc_charge_demand": 0,
                 "discharge_allowed": False,
+                "dyn_override_active": False,
                 "error": 0,
                 "hour": -1,
             },
@@ -339,6 +404,7 @@ def test_dummy_backend_integration(monkeypatch, time_frame_base, berlin_timezone
                 "ac_charge_demand": 0,
                 "dc_charge_demand": 0,
                 "discharge_allowed": False,
+                "dyn_override_active": False,
                 "error": 0,
                 "hour": -1,
             },

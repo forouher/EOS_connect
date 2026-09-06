@@ -20,6 +20,7 @@ import logging
 from datetime import datetime, timedelta
 from .optimization_backends.optimization_backend_eos import EOSBackend
 from .optimization_backends.optimization_backend_evopt import EVOptBackend
+from .optimization_backends.optimization_backend_local_evopt import LocalEVOptBackend
 
 logger = logging.getLogger("__main__")
 
@@ -31,7 +32,14 @@ class OptimizationInterface:
     Handles backend selection and delegates all transformation logic to the backend.
     """
 
-    def __init__(self, config, time_frame_base, timezone):
+    def __init__(
+        self,
+        config,
+        time_frame_base,
+        timezone,
+        inverter_max_grid_charge_rate_w=None,
+        inverter_max_pv_charge_rate_w=None,
+    ):
         self.eos_source = config.get("source", "eos_server")
         self.base_url = (
             f"http://{config.get('server', '192.168.1.1')}:{config.get('port', 8503)}"
@@ -40,9 +48,72 @@ class OptimizationInterface:
         self.time_zone = timezone
         self.config = config  # Store config for accessing optimization settings
 
-        if self.eos_source == "evopt":
+        # Store hot-reloadable optimizer settings as instance attributes
+        self.timeout = config.get("timeout", 180)
+        self.dyn_override_discharge_allowed = config.get(
+            "dyn_override_discharge_allowed_pv_greater_load", False
+        )
+        self.pv_battery_charge_control_enabled = config.get(
+            "pv_battery_charge_control_enabled", False
+        )
+
+        # Store inverter limits for smart defaults (used if grid limits are 0/not set)
+        self.inverter_max_grid_charge_rate_w = inverter_max_grid_charge_rate_w or 5000
+        self.inverter_max_pv_charge_rate_w = inverter_max_pv_charge_rate_w or 5000
+
+        if self.eos_source == "local_evopt":
+            # Parse local_evopt-specific settings; 0 means "not set" for int fields
+            _num_threads = config.get("local_evopt_num_threads") or None
+            _time_limit = config.get("local_evopt_time_limit") or None
+            _max_imp = config.get("local_evopt_max_grid_import_w") or 0
+            _max_exp = config.get("local_evopt_max_grid_export_w") or 0
+
+            # Smart defaults: if grid limits are 0 (not configured), use inverter limits
+            if not _max_imp or _max_imp <= 0:
+                _max_imp = self.inverter_max_grid_charge_rate_w
+            if not _max_exp or _max_exp <= 0:
+                _max_exp = self.inverter_max_pv_charge_rate_w
+            # Extract strategies to comply with line length limits
+            _charging_strat = config.get(
+                "local_evopt_charging_strategy", "charge_before_export"
+            )
+            _discharging_strat = config.get(
+                "local_evopt_discharging_strategy", "discharge_before_import"
+            )
+            self.backend = LocalEVOptBackend(
+                time_frame_base=self.time_frame_base,
+                time_zone=self.time_zone,
+                num_threads=_num_threads,
+                time_limit=_time_limit,
+                charging_strategy=_charging_strat,
+                discharging_strategy=_discharging_strat,
+                emergency_reserve_pct=config.get(
+                    "local_evopt_emergency_reserve_pct", 0
+                ),
+                max_grid_import_w=_max_imp,
+                max_grid_export_w=_max_exp,
+            )
+            self.backend_type = "local_evopt"
+            logger.info(
+                "[OPTIMIZATION] Using Local EVopt backend (built-in MILP, no external server)"
+            )
+        elif self.eos_source == "evopt":
+            # Smart defaults: if grid limits are 0 (not configured), use inverter limits
+            # Experts can override with explicit values > 0
+            _max_imp = config.get("external_evopt_max_grid_import_w") or 0
+            _max_exp = config.get("external_evopt_max_grid_export_w") or 0
+
+            # Use inverter limits as defaults if grid limits not explicitly configured
+            # (0 means not set by the user)
+            if not _max_imp or _max_imp <= 0:
+                _max_imp = self.inverter_max_grid_charge_rate_w
+            if not _max_exp or _max_exp <= 0:
+                _max_exp = self.inverter_max_pv_charge_rate_w
+
             self.backend = EVOptBackend(
-                self.base_url, self.time_frame_base, self.time_zone
+                self.base_url, self.time_frame_base, self.time_zone,
+                max_grid_import_w=_max_imp,
+                max_grid_export_w=_max_exp,
             )
             self.backend_type = "evopt"
             logger.info("[OPTIMIZATION] Using EVopt backend")
@@ -78,11 +149,14 @@ class OptimizationInterface:
             },
         ]
 
-    def optimize(self, eos_request, timeout=180):
+    def optimize(self, eos_request, timeout=None):
         """
         Main entry point for optimization.
         Accepts EOS-format request, returns EOS-format response.
+        If timeout is not provided, uses the configured timeout value.
         """
+        if timeout is None:
+            timeout = self.timeout
         self.last_eos_request = eos_request  # Store for dynamic override logic
         eos_response, avg_runtime = self.backend.optimize(eos_request, timeout)
         return eos_response, avg_runtime
@@ -226,9 +300,7 @@ class OptimizationInterface:
             # Manual override (if active) takes precedence over dynamic override.
             # BaseControl.__set_current_overall_state() checks manual override FIRST and returns
             # early if active, ensuring manual override always wins regardless of dynamic override state.
-            dyn_override_enabled = self.config.get(
-                "dyn_override_discharge_allowed_pv_greater_load", False
-            )
+            dyn_override_enabled = self.dyn_override_discharge_allowed
             dyn_override_active = False
 
             # Initialize array with all False - will be updated for overridden slots

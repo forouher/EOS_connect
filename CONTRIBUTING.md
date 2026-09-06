@@ -20,7 +20,7 @@ Flow
    - Ensure all Python files are formatted with [Black](https://black.readthedocs.io/en/stable/) (`black .`)
      - **Tip for VS Code users:** Install the [Black Formatter extension](https://github.com/microsoft/vscode-black-formatter) for automatic formatting on save. (// VS Code settings.json "[python]": { "editor.formatOnSave": true })
    - Run [pylint](https://pylint.pycqa.org/) and ensure a score of **9.0 or higher** for all files (`pylint src/`)
-   - tests - see info at guidelines below
+   - tests - see info at guidelines below (`pytest tests/`)
 5. Rebase before PR: git fetch origin && git rebase origin/develop
 6. Push: git push -u origin feature/better-forecast
 7. Open PR → base: develop (link issues: Closes #123)
@@ -42,11 +42,53 @@ Guidelines
 - One logical change per PR
 - Add/adjust tests for logic changes
   - Use [pytest](https://docs.pytest.org/) for all unit and integration tests.
+  - Install the tooling with `pip install -r requirements-dev.txt`, then run `pytest tests/`.
+  - Browser tests live in `tests/web/` and drive the real UI assets in Chromium. They
+    need a browser: `playwright install chromium`, plus its shared libraries via
+    `playwright install-deps chromium` or, without root,
+    `scripts/install_playwright_deps_userspace.sh`. Without one the directory skips
+    itself rather than failing, so check the summary says it ran.
+    Install `playwright` alone — **not** `pytest-playwright`, whose `pytest-base-url`
+    dependency breaks 44 unrelated tests (see `tests/web/conftest.py`).
   - Place tests in the `tests/` directory, organized to mirror the structure of the `src/` directory:
     - Create a subfolder for each source module or feature (e.g., if your code is in `src/interfaces/mqtt_interface.py`, place tests in `tests/interfaces/test_mqtt_interface.py`).
     - Name test files as `test_<uut-filename>.py` (e.g., `test_mqtt_interface.py` for `mqtt_interface.py`).
 - Document new config keys / API / MQTT topics
 - Prefer clarity over cleverness
+
+## Key Architectural Patterns
+
+### Interface Creation & Startup Error Handling
+
+When adding new interfaces or modifying interface initialization:
+
+- **Use `InterfaceFactory`** (`src/interface_factory.py`) for centralized creation with integrated error handling
+  - Reduces boilerplate error catching in the main app
+  - Automatically registers errors with `StartupValidator`
+  - Categorizes critical vs non-critical interfaces
+
+- **Use `StartupValidator`** (`src/startup_validator.py`) to register startup errors
+  - Errors appear in the web UI's startup panel within 1-2 seconds
+  - Include metadata markers: `| Config: #section | ACTION REQUIRED`
+  - Enables users to quickly fix configuration issues
+
+**Example:**
+```python
+# In eos_connect.py
+from interface_factory import InterfaceFactory
+from startup_validator import StartupValidator
+
+validator = StartupValidator()
+factory = InterfaceFactory(validator)
+
+battery_interface = factory.create_battery_interface(
+    config=config['battery'],
+    time_zone=time_zone,
+    critical=True,  # Halt startup if fails
+)
+```
+
+For detailed architecture and design patterns, see the [Developer Guide → Interface Creation & Startup Error Handling](docs/developer/index.html#architecture).
 
 ## Code Ownership
 

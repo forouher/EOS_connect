@@ -108,9 +108,18 @@ class TestInverterHAInitialization:
         assert inverter.token == "test-long-lived-access-token"
 
     def test_config_sequences_loaded(self, inverter, default_config):
-        assert inverter.mode_sequences["force_charge"] == default_config["charge_from_grid"]
-        assert inverter.mode_sequences["avoid_discharge"] == default_config["avoid_discharge"]
-        assert inverter.mode_sequences["allow_discharge"] == default_config["discharge_allowed"]
+        assert (
+            inverter.mode_sequences["force_charge"]
+            == default_config["charge_from_grid"]
+        )
+        assert (
+            inverter.mode_sequences["avoid_discharge"]
+            == default_config["avoid_discharge"]
+        )
+        assert (
+            inverter.mode_sequences["allow_discharge"]
+            == default_config["discharge_allowed"]
+        )
 
     def test_default_max_rates(self):
         cfg = {"url": "http://ha.local", "token": "tok"}
@@ -142,6 +151,33 @@ class TestInverterHAInitialization:
 
     def test_initial_current_mode_is_none(self, inverter):
         assert inverter.current_mode is None
+
+    def test_token_leading_trailing_whitespace_stripped(self, caplog):
+        """Token with leading/trailing whitespace (YAML >- block scalar) is stripped."""
+        cfg = {"url": "http://ha.local", "token": "  mytoken  "}
+        inv = InverterHA(cfg)
+        assert inv.token == "mytoken"
+        assert "whitespace stripped" in caplog.text
+
+    def test_token_newline_stripped(self, caplog):
+        """Token with embedded newline from YAML >- multi-line block is stripped."""
+        cfg = {"url": "http://ha.local", "token": "mytoken\n"}
+        inv = InverterHA(cfg)
+        assert inv.token == "mytoken"
+        assert "whitespace stripped" in caplog.text
+
+    def test_token_internal_whitespace_warns(self, caplog):
+        """Token with internal whitespace logs an authentication-failure warning."""
+        cfg = {"url": "http://ha.local", "token": "part1 part2"}
+        inv = InverterHA(cfg)
+        assert inv.token == "part1 part2"
+        assert "internal whitespace" in caplog.text
+
+    def test_clean_token_no_warning(self, caplog):
+        """Clean token produces no whitespace warning."""
+        cfg = {"url": "http://ha.local", "token": "cleantoken"}
+        InverterHA(cfg)
+        assert "whitespace" not in caplog.text
 
 
 # =========================================================================
@@ -364,6 +400,99 @@ class TestSetModeAvoidDischarge:
 # =========================================================================
 # 6. set_mode_allow_discharge()
 # =========================================================================
+
+
+class TestSSLIgnoreConfiguration:
+    """Test ssl_ignore configuration in InverterHA."""
+
+    @pytest.fixture
+    def ssl_ignore_true_config(self):
+        """InverterHA config with ssl_ignore=True."""
+        return {
+            "url": "http://homeassistant.local:8123",
+            "token": "test_token_123",
+            "ssl_ignore": True,
+            "charge_from_grid": [],
+            "avoid_discharge": [],
+            "discharge_allowed": [],
+        }
+
+    @pytest.fixture
+    def ssl_ignore_false_config(self):
+        """InverterHA config with ssl_ignore=False."""
+        return {
+            "url": "http://homeassistant.local:8123",
+            "token": "test_token_456",
+            "ssl_ignore": False,
+            "charge_from_grid": [],
+            "avoid_discharge": [],
+            "discharge_allowed": [],
+        }
+
+    def test_ssl_ignore_true_stored(self, ssl_ignore_true_config):
+        """Test that ssl_ignore=True is stored in the instance."""
+        inverter = InverterHA(ssl_ignore_true_config)
+        assert inverter.ssl_ignore is True
+
+    def test_ssl_ignore_false_stored(self, ssl_ignore_false_config):
+        """Test that ssl_ignore=False is stored in the instance."""
+        inverter = InverterHA(ssl_ignore_false_config)
+        assert inverter.ssl_ignore is False
+
+    def test_ssl_ignore_defaults_to_false(self):
+        """Test that ssl_ignore defaults to False when not specified."""
+        config = {
+            "url": "http://homeassistant.local:8123",
+            "token": "test_token_789",
+            # ssl_ignore not specified
+            "charge_from_grid": [],
+            "avoid_discharge": [],
+            "discharge_allowed": [],
+        }
+        inverter = InverterHA(config)
+        assert inverter.ssl_ignore is False
+
+    @patch("src.interfaces.inverters.inverter_ha.requests.post")
+    def test_service_call_with_ssl_ignore_false(self, mock_post, ssl_ignore_false_config):
+        """Test service call passes verify=True when ssl_ignore=False."""
+        inverter = InverterHA(ssl_ignore_false_config)
+        
+        mock_resp = Mock()
+        mock_resp.raise_for_status.return_value = None
+        mock_post.return_value = mock_resp
+        
+        service_call = {
+            "service": "switch.turn_on",
+            "entity_id": "switch.my_switch",
+        }
+        
+        inverter._call_service(service_call)
+        
+        # Verify verify=True was passed
+        mock_post.assert_called_once()
+        call_kwargs = mock_post.call_args[1]
+        assert call_kwargs.get("verify") is True
+
+    @patch("src.interfaces.inverters.inverter_ha.requests.post")
+    def test_service_call_with_ssl_ignore_true(self, mock_post, ssl_ignore_true_config):
+        """Test service call passes verify=False when ssl_ignore=True."""
+        inverter = InverterHA(ssl_ignore_true_config)
+        
+        mock_resp = Mock()
+        mock_resp.raise_for_status.return_value = None
+        mock_post.return_value = mock_resp
+        
+        service_call = {
+            "service": "switch.turn_on",
+            "entity_id": "switch.my_switch",
+        }
+        
+        inverter._call_service(service_call)
+        
+        # Verify verify=False was passed
+        mock_post.assert_called_once()
+        call_kwargs = mock_post.call_args[1]
+        assert call_kwargs.get("verify") is False
 
 
 class TestSetModeAllowDischarge:

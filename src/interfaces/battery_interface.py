@@ -42,6 +42,7 @@ import time
 from datetime import datetime
 import requests
 from .battery_price_handler import BatteryPriceHandler
+from .state_source import SUPPORTED_SOURCES, fetch_remote_state
 
 logger = logging.getLogger("__main__")
 logger.info("[BATTERY-IF] loading module ")
@@ -92,7 +93,27 @@ class BatteryInterface:
         self.url = config.get("url", "")
         self.soc_sensor = config.get("soc_sensor", "")
         self.temp_sensor = config.get("sensor_battery_temperature", "")
-        self.access_token = config.get("access_token", "")
+        raw_token = config.get("access_token", "")
+        # Strip leading/trailing whitespace that can be introduced by YAML >- block
+        # scalar style when long tokens wrap across multiple lines
+        self.access_token = str(raw_token).strip()
+        if self.access_token != raw_token:
+            logger.warning(
+                "[BATTERY-IF] access_token had leading/trailing whitespace stripped. "
+                "Check your access token setting for unintended spaces."
+            )
+        elif " " in self.access_token or "\n" in self.access_token:
+            logger.warning(
+                "[BATTERY-IF] access_token contains internal whitespace. This will cause "
+                "HTTP 403 errors. Re-enter the token in Settings → Data Source "
+                "without extra spaces or line breaks."
+            )
+        self.ssl_ignore = bool(config.get("ssl_ignore", False))
+        if self.ssl_ignore:
+            logger.warning(
+                "[BATTERY-IF] ssl_ignore=True: SSL certificate verification is disabled. "
+                "Only use this with a trusted private network."
+            )
         self.max_charge_power_fix = config.get("max_charge_power_w", 1000)
         self.battery_data = config
         self.max_charge_power_dyn = 0
@@ -112,6 +133,12 @@ class BatteryInterface:
 
         self.soc_fail_count = 0
 
+        self.configuration_state = "unknown"  # 'valid', 'incomplete', or 'invalid'
+        self.configuration_valid = False
+        self.configuration_message = ""
+        self.soc_source_usable = False
+        self.__check_soc_config()
+
         # Initialize dynamic price handler
         self.price_handler = BatteryPriceHandler(
             config, load_interface=load_interface, timezone=timezone
@@ -122,6 +149,60 @@ class BatteryInterface:
         self._stop_event = threading.Event()
         self.start_update_service()
 
+    def __check_soc_config(self):
+        """
+        Decide whether the SOC sensor can actually be read, before anything tries.
+
+        Deliberately scoped to the SOC sensor rather than to ``self.src``: the same
+        source also serves the battery temperature and battery price sensors, which are
+        configured independently, so downgrading the source here would silently disable
+        two unrelated features that are perfectly well configured.
+
+        A placeholder entity name used to reach this point intact — the setup wizard
+        stored ``battery_SOC`` as though the user had chosen it — which turned into a
+        404 against Home Assistant every 30 seconds, forever, with nothing in the UI
+        connecting it to a config field. Those names are blanked at the config layer
+        now, so an unconfigured sensor arrives here as "" and is caught below.
+        """
+        if self.src == "default":
+            self.configuration_state = "valid"
+            self.configuration_valid = True
+            self.soc_source_usable = False
+            logger.debug("[BATTERY-IF] Using default source - no SOC sensor needed.")
+            return
+
+        if self.src not in SUPPORTED_SOURCES:
+            self.configuration_state = "invalid"
+            self.configuration_message = (
+                f"Battery source '{self.src}' is not supported. "
+                "Using the default start SOC of 5%."
+            )
+            logger.error("[BATTERY-IF] %s", self.configuration_message)
+            return
+
+        missing, where = None, "Data Source"
+        if self.url == "":
+            missing = "the data source URL is not configured"
+        elif self.access_token == "" and self.src == "homeassistant":
+            missing = "the Home Assistant access token is not configured"
+        elif self.soc_sensor == "":
+            missing, where = "no battery SOC sensor is set", "Battery"
+
+        if missing:
+            self.configuration_state = "incomplete"
+            self.configuration_message = (
+                f"Battery source '{self.src}' is selected, but {missing}. "
+                "The battery SOC stays at the default 5% until you set it under "
+                f"Settings > {where}."
+            )
+            logger.warning("[BATTERY-IF] %s", self.configuration_message)
+            return
+
+        self.configuration_state = "valid"
+        self.configuration_valid = True
+        self.soc_source_usable = True
+        logger.debug("[BATTERY-IF] SOC config check successful using '%s'", self.src)
+
     # source-specific SOC fetchers removed — use __fetch_soc_data_unified
 
     def __battery_request_current_soc(self):
@@ -130,7 +211,9 @@ class BatteryInterface:
         """
         # default value for start SOC = 5
         default = False
-        if self.src == "default":
+        if self.src == "default" or not self.soc_source_usable:
+            # Not attempting the request is the point: an unreadable SOC sensor used to
+            # 404 on every cycle forever. __check_soc_config has already logged why.
             self.current_soc = 5
             default = True
             logger.debug("[BATTERY-IF] source set to default with start SOC = 5%")
@@ -203,27 +286,14 @@ class BatteryInterface:
         Returns the trimmed state string. Raises the original requests
         exceptions for callers to handle.
         """
-        if not sensor:
-            raise ValueError("Sensor/item identifier must be provided")
-
-        if source == "openhab":
-            url = self.url + "/rest/items/" + sensor
-            response = requests.get(url, timeout=self.request_timeout)
-            response.raise_for_status()
-            data = response.json()
-            return str(data.get("state", "")).strip()
-        elif source == "homeassistant":
-            url = f"{self.url}/api/states/{sensor}"
-            headers = {
-                "Authorization": f"Bearer {self.access_token}",
-                "Content-Type": "application/json",
-            }
-            response = requests.get(url, headers=headers, timeout=self.request_timeout)
-            response.raise_for_status()
-            data = response.json()
-            return str(data.get("state", "")).strip()
-        else:
-            raise ValueError(f"Unknown source: {source}")
+        return fetch_remote_state(
+            source,
+            sensor,
+            url=self.url,
+            access_token=self.access_token,
+            request_timeout=self.request_timeout,
+            ssl_ignore=self.ssl_ignore,
+        )
 
     def __fetch_soc_data_unified(self):
         """Unified SOC fetch using the configured `self.src` source."""
@@ -555,7 +625,23 @@ class BatteryInterface:
             float: The dynamically calculated maximum charge power in watts.
         """
         if not self.battery_data.get("charging_curve_enabled", True):
-            self.max_charge_power_dyn = self.max_charge_power_fix
+            max_charge_power = self.max_charge_power_fix
+            if max_charge_power != self.last_max_charge_power_dyn:
+                self.max_charge_power_dyn = max_charge_power
+                self.last_max_charge_power_dyn = max_charge_power
+                logger.info(
+                    "[BATTERY-IF] Max charge power: %s W (charging curve disabled, fixed)",
+                    self.max_charge_power_dyn,
+                )
+
+                if self.base_control:
+                    self.base_control.set_current_bat_charge_max(self.max_charge_power_dyn)
+
+                if self.on_bat_max_changed:
+                    self.on_bat_max_changed()
+            else:
+                self.max_charge_power_dyn = max_charge_power
+
             logger.debug(
                 "[BATTERY-IF] Charging curve disabled, using fixed max charge power."
             )
@@ -674,7 +760,10 @@ class BatteryInterface:
                 self.__update_price_euro_per_wh()
 
             except (requests.exceptions.RequestException, ValueError, KeyError) as e:
-                logger.error("[BATTERY-IF] Error while updating state: %s", e)
+                logger.error(
+                    "[battery_interface] Battery state update failed: %s | Config: #battery | ACTION REQUIRED",
+                    e
+                )
                 # Break the sleep interval into smaller chunks to allow immediate shutdown
             sleep_interval = self.update_interval
             while sleep_interval > 0:

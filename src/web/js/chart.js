@@ -34,7 +34,8 @@ class ChartManager {
 
         const time_frame_base = data_controls["used_time_frame_base"];
 
-        const evopt_in_charge = data_controls["used_optimization_source"] === "evopt";
+        // Check if EVopt-based optimizer is active (both remote "evopt" and local "local_evopt")
+        const evopt_in_charge = ["evopt", "local_evopt"].includes(data_controls["used_optimization_source"]);
 
         // Create labels in user's local timezone - showing only hours with :00
         this.chartInstance.data.labels = Array.from(
@@ -65,10 +66,25 @@ class ChartManager {
             }
         );
 
+        // Use gesamtlast from request as pure household load.
+        // EOS server includes AC charging energy in Last_Wh_pro_Stunde; using gesamtlast
+        // gives consistent display across both EOS and EVopt backends.
+        let gesamtlastSliced;
+        if (time_frame_base === 900) {
+            gesamtlastSliced = data_request["ems"]["gesamtlast"]
+                .slice(currentSlot)
+                .concat(data_request["ems"]["gesamtlast"].slice(0, currentSlot))
+                .slice(0, data_response["result"]["Last_Wh_pro_Stunde"].length);
+        } else {
+            gesamtlastSliced = data_request["ems"]["gesamtlast"]
+                .slice(currentHour)
+                .concat(data_request["ems"]["gesamtlast"].slice(24, 48))
+                .slice(0, data_response["result"]["Last_Wh_pro_Stunde"].length);
+        }
         // Calculate consumption (excluding home appliances)
-        this.chartInstance.data.datasets[0].data = data_response["result"]["Last_Wh_pro_Stunde"].map((value, index) => {
-            const actHomeApplianceValue = data_response["result"]["Home_appliance_wh_per_hour"].map(value => value)
-            return ((value - actHomeApplianceValue[index]) / 1000).toFixed(3);
+        this.chartInstance.data.datasets[0].data = gesamtlastSliced.map((value, index) => {
+            const actHomeApplianceValue = data_response["result"]["Home_appliance_wh_per_hour"][index] || 0;
+            return ((value - actHomeApplianceValue) / 1000).toFixed(3);
         });
 
         // Home appliances
@@ -90,6 +106,31 @@ class ChartManager {
                 .concat(data_request["ems"]["pv_prognose_wh"].slice(24, 48))
                 .map(value => (value / 1000).toFixed(3));
         }
+        // Color PV forecast bars: gold when dc_charge=1 (PV charges battery), standard orange otherwise
+        // Only active when pv_battery_charge_control_enabled is set in config
+        const pvChargeCtrlEnabled = data_controls["current_states"] &&
+            data_controls["current_states"]["pv_battery_charge_control_enabled"];
+        if (data_response["dc_charge"] && pvChargeCtrlEnabled) {
+            let dcChargeSlots;
+            if (time_frame_base === 900) {
+                dcChargeSlots = data_response["dc_charge"].slice(currentSlot).concat(data_response["dc_charge"].slice(96, 192));
+            } else {
+                dcChargeSlots = data_response["dc_charge"].slice(currentHour).concat(data_response["dc_charge"].slice(24, 48));
+            }
+            this.chartInstance.data.datasets[2].backgroundColor = pvData.map((_, i) =>
+                dcChargeSlots[i] ? '#df6c00' : '#FFA500'
+            );
+            this.chartInstance.data.datasets[2].borderColor = pvData.map((_, i) =>
+                dcChargeSlots[i] ? '#ff7b00' : '#FF991C'
+            );
+            // Store slots for dataset[12] tooltip carrier
+            this.chartInstance.data.datasets[12].data = dcChargeSlots;
+        } else {
+            // Reset to uniform orange when no dc_charge data
+            this.chartInstance.data.datasets[2].backgroundColor = '#FFA500';
+            this.chartInstance.data.datasets[2].borderColor = '#FF991C';
+            this.chartInstance.data.datasets[12].data = [];
+        }
         this.chartInstance.data.datasets[2].data = pvData;
 
         // Prepare arrays for grid and AC charge with redistribution logic
@@ -103,13 +144,21 @@ class ChartManager {
                 originalAcChargeValue = data_response["ac_charge"].slice(current_quarterly_slot).concat(data_response["ac_charge"].slice(24, 48))[index] * max_charge_power_w;
             }
 
+            // EVopt: subtract planned AC charge from grid.
+            // EOS: Last_Wh_pro_Stunde already contains optimizer-added load, which can differ
+            // from planned AC charge, so subtract the embedded optimizer load component instead.
+            const responseLoadWh = data_response["result"]["Last_Wh_pro_Stunde"][index] || 0;
+            const householdLoadWh = gesamtlastSliced[index] || 0;
+            const optimizerAddedLoadWh = evopt_in_charge
+                ? originalAcChargeValue
+                : Math.max(0, responseLoadWh - householdLoadWh);
 
-            let gridValue = (value - originalAcChargeValue) / 1000;
+            let gridValue = (value - optimizerAddedLoadWh) / 1000;
             let adjustedAcChargeValue = originalAcChargeValue / 1000;
 
             // Validation for invalid numbers
             if (isNaN(gridValue) || !isFinite(gridValue)) {
-                console.warn(`Invalid grid calculation at index ${index}: Netzbezug=${value}, AC_charge=${originalAcChargeValue}, using 0 for grid`);
+                console.warn(`Invalid grid calculation at index ${index}: Netzbezug=${value}, optimizer_added_load=${optimizerAddedLoadWh}, using 0 for grid`);
                 gridValue = 0;
                 adjustedAcChargeValue = (value / 1000); // Treat all as AC charge
             }
@@ -140,6 +189,8 @@ class ChartManager {
         } else {
             this.chartInstance.data.datasets[8].data = data_response["discharge_allowed"].slice(currentHour).concat(data_response["discharge_allowed"].slice(24, 48));
         }
+
+        // dataset[12] is populated alongside PV bar recolouring above — nothing more needed here
 
         // Dynamic Override (PV > Load) dataset - show when feature is active
         let dynOverrideData = null;
@@ -177,7 +228,7 @@ class ChartManager {
 
         // Electricity Price - with segment styling for forecast data
         const priceRawData = data_response["result"]["Electricity_price"];
-        const priceData = priceRawData.map(value => value * 1000);
+        const priceData = priceRawData.map(value => value * 100000);
         
         // Apply segment styling if forecast data is available
         if (priceInfo && priceInfo.forecast_start_index !== null && priceInfo.forecast_type !== "all_real") {
@@ -217,7 +268,7 @@ class ChartManager {
             
             // Set dataset 10 (real prices) - solid orange
             this.chartInstance.data.datasets[10].data = dataset10Data;
-            this.chartInstance.data.datasets[10].label = `Electricity Price (${localization.currency_symbol}/kWh)`;
+            this.chartInstance.data.datasets[10].label = `Electricity Price (${localization.currency_minor_unit}/kWh)`;
             this.chartInstance.data.datasets[10].borderColor = 'rgba(255, 69, 0, 0.8)';
             this.chartInstance.data.datasets[10].borderDash = [];
             
@@ -226,7 +277,7 @@ class ChartManager {
                 console.warn('[ChartManager] Dataset 11 does not exist for forecast visualization');
             } else {
                 this.chartInstance.data.datasets[11].data = dataset11Data;
-                this.chartInstance.data.datasets[11].label = `Electricity Price Forecast - ${priceInfo.forecast_type.replace(/_/g, ' ')} (${localization.currency_symbol}/kWh)`;
+                this.chartInstance.data.datasets[11].label = `Electricity Price Forecast - ${priceInfo.forecast_type.replace(/_/g, ' ')} (${localization.currency_minor_unit}/kWh)`;
                 this.chartInstance.data.datasets[11].borderColor = 'rgba(167, 167, 167, 0.7)';
                 // this.chartInstance.data.datasets[11].borderDash = [5, 5];  // Dotted pattern
                 this.chartInstance.data.datasets[11].borderWidth = 2;  // Thicker to see dashing
@@ -239,11 +290,11 @@ class ChartManager {
                 this.chartInstance.data.datasets[11].hidden = false;
             }
             
-            this.chartInstance.options.scales.y1.title.text = `Price (${localization.currency_symbol}/kWh)`;
+            this.chartInstance.options.scales.y1.title.text = `Price (${localization.currency_minor_unit}/kWh)`;
         } else {
             // No forecasting - all real prices
             this.chartInstance.data.datasets[10].data = priceData;
-            this.chartInstance.data.datasets[10].label = `Electricity Price (${localization.currency_symbol}/kWh)`;
+            this.chartInstance.data.datasets[10].label = `Electricity Price (${localization.currency_minor_unit}/kWh)`;
             this.chartInstance.data.datasets[10].borderColor = 'rgba(255, 69, 0, 0.8)';
             this.chartInstance.data.datasets[10].borderDash = [];
             
@@ -253,7 +304,7 @@ class ChartManager {
                 this.chartInstance.data.datasets[11].hidden = true;
             }
             
-            this.chartInstance.options.scales.y1.title.text = `Price (${localization.currency_symbol}/kWh)`;
+            this.chartInstance.options.scales.y1.title.text = `Price (${localization.currency_minor_unit}/kWh)`;
         }
 
         this.chartInstance.update('none'); // Update without animation
@@ -279,8 +330,9 @@ class ChartManager {
                     { label: 'Income', data: [], type: 'line', borderColor: 'lightyellow', backgroundColor: 'yellow', borderWidth: 1, yAxisID: 'y1', stepped: true, hidden: true, pointRadius: 1, pointHoverRadius: 4 },
                     { label: 'Discharge Allowed', data: [], type: 'line', borderColor: 'rgba(144, 238, 144, 0.3)', backgroundColor: 'rgba(144, 238, 144, 0.05)', borderWidth: 1, fill: true, yAxisID: 'y3', pointRadius: 1, pointHoverRadius: 4, stepped: true },
                     { label: 'Dynamic Discharge Allowed (PV > Load)', data: [], type: 'line', borderColor: 'rgba(50, 205, 50, 0.6)', backgroundColor: 'rgba(50, 205, 50, 0.1)', borderWidth: 1, fill: true, yAxisID: 'y3', pointRadius: 1, pointHoverRadius: 4, stepped: true, hidden: false },
-                    { label: `Electricity Price (${localization.currency_symbol}/kWh)`, data: [], type: 'line', borderColor: 'rgba(255, 69, 0, 0.8)', backgroundColor: 'rgba(255, 165, 0, 0.2)', borderWidth: 1, yAxisID: 'y1', stepped: true, pointRadius: 1, pointHoverRadius: 4 },
-                    { label: 'Electricity Price - Forecast', data: [], type: 'line', borderColor: 'rgba(167, 167, 167, 0.7)', backgroundColor: 'rgba(220, 20, 60, 0.05)', borderWidth: 2, yAxisID: 'y1', stepped: true, pointRadius: 1, pointHoverRadius: 4, fill: false, hidden: true }
+                    { label: `Electricity Price (${localization.currency_minor_unit}/kWh)`, data: [], type: 'line', borderColor: 'rgba(255, 69, 0, 0.8)', backgroundColor: 'rgba(255, 165, 0, 0.2)', borderWidth: 1, yAxisID: 'y1', stepped: true, pointRadius: 1, pointHoverRadius: 4 },
+                    { label: 'Electricity Price - Forecast', data: [], type: 'line', borderColor: 'rgba(167, 167, 167, 0.7)', backgroundColor: 'rgba(220, 20, 60, 0.05)', borderWidth: 2, yAxisID: 'y1', stepped: true, pointRadius: 1, pointHoverRadius: 4, fill: false, hidden: true },
+                    { label: 'PV Charge Planned', data: [], type: 'line', borderColor: 'transparent', backgroundColor: 'transparent', borderWidth: 0, fill: false, yAxisID: 'y3', pointRadius: 0, pointHoverRadius: 0, stepped: true, hidden: true }
                 ]
             },
             options: {
@@ -288,13 +340,18 @@ class ChartManager {
                 maintainAspectRatio: false,
                 scales: {
                     y: { beginAtZero: true, title: { display: true, text: 'Energy (kWh)', color: 'lightgray' }, grid: { color: 'rgb(54, 54, 54)' }, ticks: { color: 'lightgray' } },
-                    y1: { beginAtZero: true, position: 'right', title: { display: true, text: `Price (${localization.currency_symbol}/kWh)`, color: 'lightgray' }, grid: { drawOnChartArea: false }, ticks: { color: 'lightgray', callback: value => value.toFixed(2) } },
+                    y1: { beginAtZero: true, position: 'right', title: { display: true, text: `Price (${localization.currency_minor_unit}/kWh)`, color: 'lightgray' }, grid: { drawOnChartArea: false }, ticks: { color: 'lightgray', callback: value => value.toFixed(1) } },
                     y2: { beginAtZero: true, position: 'right', title: { display: true, text: 'Battery SOC (%)', color: 'darkgray' }, grid: { drawOnChartArea: false }, ticks: { color: 'darkgray', callback: value => value.toFixed(0) } },
                     y3: { beginAtZero: true, position: 'right', display: false, title: { display: true, text: 'AC Charge', color: 'darkgray' }, grid: { drawOnChartArea: false }, ticks: { color: 'darkgray', callback: value => value.toFixed(2) } },
                     x: { grid: { color: 'rgb(54, 54, 54)' }, ticks: { color: 'lightgray', font: { size: 10 } } }
                 },
                 plugins: {
-                    legend: { display: !isMobile(), labels: { color: 'lightgray' } },
+                    legend: { display: !isMobile(), labels: { color: 'lightgray', filter: item => {
+                        if (item.text === 'PV Charge Planned') return false;
+                        if (item.text === 'Dynamic Discharge Allowed (PV > Load)' &&
+                            !(data_controls?.current_states?.dyn_override_discharge_allowed_enabled)) return false;
+                        return true;
+                    } } },
                     tooltip: {
                         mode: 'index',  // Show all datasets for the hovered x-axis value
                         intersect: false,  // Don't require intersection with data point
@@ -316,8 +373,15 @@ class ChartManager {
                                     return `${label}: ${value} kWh`;
                                 else if (label === 'Home Appliance')
                                     return `${label}: ${value} kWh`;
-                                else if (label === 'PV forecast')
-                                    return `${label}: ${value} kWh`;
+                                else if (label === 'PV forecast') {
+                                    // Amber bar = PV charging battery (dc_charge=1)
+                                    const isBatteryCharge = context.dataset.backgroundColor instanceof Array
+                                        ? context.dataset.backgroundColor[context.dataIndex] !== '#FFA500'
+                                        : false;
+                                    return isBatteryCharge
+                                        ? `${label}: ${value} kWh \u26a1 charges battery`
+                                        : `${label}: ${value} kWh`;
+                                }
                                 else if (label === 'Grid')
                                     return `${label}: ${value} kWh`;
                                 else if (label === 'AC Charge')
@@ -329,9 +393,11 @@ class ChartManager {
                                 else if (label === 'Income')
                                     return `${label}: ${value} ${localization.currency_symbol}`;
                                 else if (label.startsWith('Electricity Price'))
-                                    return `${label}: ${value.toFixed(3)} ${localization.currency_symbol}/kWh`;
+                                    return `${label}: ${value.toFixed(2)} ${localization.currency_minor_unit}/kWh`;
                                 else if (label === 'Discharge Allowed')
                                     return `${label}: ${value}`;
+                                else if (label === 'PV Charge Planned')
+                                    return null; // hidden carrier, suppress tooltip entry
                                 return `${label}: ${value}`;
                             }
                         }

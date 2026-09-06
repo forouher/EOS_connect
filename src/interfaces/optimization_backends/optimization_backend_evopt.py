@@ -30,10 +30,19 @@ class EVOptBackend:
     Accepts EOS-format requests, transforms to EVopt format, and returns EOS-format responses.
     """
 
-    def __init__(self, base_url, time_frame_base, time_zone):
+    def __init__(
+        self,
+        base_url,
+        time_frame_base,
+        time_zone,
+        max_grid_import_w=None,
+        max_grid_export_w=None,
+    ):
         self.base_url = base_url
         self.time_frame_base = time_frame_base
         self.time_zone = time_zone
+        self.max_grid_import_w = max_grid_import_w if max_grid_import_w else 10000
+        self.max_grid_export_w = max_grid_export_w if max_grid_export_w else 10000
         self.last_optimization_runtimes = [0] * 5
         self.last_optimization_runtime_number = 0
 
@@ -174,7 +183,11 @@ class EVOptBackend:
                 "[OPT-EVopt] ERROR - payload for the request was:\n%s",
                 evopt_request,
             )
-            return {"error": str(e)}, None
+            # Logged above, not returned - see the note in the EOS backend.
+            return {
+                "error": f"Request to the EVopt server at {self.base_url} failed "
+                "- see the log for details, will try again with next cycle"
+            }, None
 
     def _transform_request_from_eos_to_evopt(self, eos_request):
         """
@@ -239,7 +252,14 @@ class EVOptBackend:
             n = min(lengths) if lengths else 1
 
         def normalize(arr):
-            return [float(x) for x in arr[:n]] if arr else [0.0] * n
+            """Return exactly *n* floats from arr, padding with last value if short."""
+            if not arr:
+                return [0.0] * n
+            result = [float(x) for x in arr[:n]]
+            if len(result) < n:
+                pad = result[-1] if result else 0.0
+                result.extend([pad] * (n - len(result)))
+            return result
 
         pv_ts = normalize(pv_series)
         price_ts = normalize(price_series)
@@ -308,8 +328,8 @@ class EVOptBackend:
                 }
             )
 
-        p_max_imp = 10000
-        p_max_exp = 10000
+        p_max_imp = self.max_grid_import_w
+        p_max_exp = self.max_grid_export_w
 
         # Compute dt series based on time_frame_base
         # Each entry corresponds to the time frame in seconds

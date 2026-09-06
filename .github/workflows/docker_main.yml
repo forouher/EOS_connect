@@ -21,17 +21,17 @@ on:
   workflow_dispatch: # allows manual triggering of the workflow
 
 env:
-  VERSION_PREFIX: 0.2.
+  VERSION_PREFIX: 0.3.
 
 jobs:
   pytest:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.13"
 
@@ -39,7 +39,13 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest
+          pip install -r requirements-dev.txt
+
+      - name: Install Chromium for the browser tests
+        # Without a browser, tests/web is skipped silently by the collect_ignore_glob
+        # in its conftest — so the setup wizard, the config page and the backup panel
+        # had no CI coverage at all despite having tests.
+        run: python -m playwright install --with-deps chromium
 
       - name: Run unit and regression tests
         run: python -m pytest -v tests/
@@ -49,7 +55,7 @@ jobs:
     needs: pytest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Pull latest changes
         run: git pull origin main --rebase
@@ -95,16 +101,10 @@ jobs:
         with:
           context: .
           platforms: linux/amd64,linux/arm64
+          provenance: false
+          sbom: false
           tags: |
             ghcr.io/${{ env.owner }}/eos_connect:release
             ghcr.io/${{ env.owner }}/eos_connect:${{ env.VERSION }}
             ghcr.io/${{ env.owner }}/eos_connect:latest
           push: ${{ github.event_name == 'push' }}
-
-      # Only upload the image artifact for pull_request events
-      - name: Upload Docker image as artifact
-        if: github.event_name == 'pull_request'
-        uses: actions/upload-artifact@v4
-        with:
-          name: eos_connect_image-${{ env.VERSION }}
-          path: eos_connect_${{ env.VERSION }}.tar.gz

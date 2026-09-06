@@ -8,11 +8,11 @@ from datetime import datetime, timedelta, timezone
 import logging
 from urllib.parse import quote
 import time
+import math
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import random
 import requests
 import pytz
-
 
 logger = logging.getLogger("__main__")
 logger.info("[LOAD-IF] loading module ")
@@ -37,7 +37,29 @@ class LoadInterface:
         self.load_sensor = config.get("load_sensor", "")
         self.car_charge_load_sensor = config.get("car_charge_load_sensor", "")
         self.additional_load_1_sensor = config.get("additional_load_1_sensor", "")
-        self.access_token = config.get("access_token", "")
+        raw_token = config.get("access_token", "")
+        # Strip leading/trailing whitespace that can be introduced by YAML >- block
+        # scalar style when long tokens wrap across multiple lines
+        self.access_token = str(raw_token).strip()
+        if self.access_token != raw_token:
+            logger.warning(
+                "[LOAD-IF] access_token had leading/trailing whitespace stripped. "
+                "Check your access token setting for unintended spaces."
+            )
+        elif " " in self.access_token or "\n" in self.access_token:
+            logger.warning(
+                "[LOAD-IF] access_token contains internal whitespace. This will cause "
+                "HTTP 403 errors. Re-enter the token in Settings → Data Source "
+                "without extra spaces or line breaks."
+            )
+
+        # SSL verification
+        self.ssl_ignore = bool(config.get("ssl_ignore", False))
+        if self.ssl_ignore:
+            logger.warning(
+                "[LOAD-IF] ssl_ignore=True: SSL certificate verification is disabled. "
+                "Only use this with a trusted private network."
+            )
 
         # retry config
         self.max_retries = config.get("max_retries", 5)
@@ -73,43 +95,59 @@ class LoadInterface:
                     )
                     self.time_zone = None
 
+        self.configuration_state = "unknown"  # 'valid', 'incomplete', or 'invalid'
+        self.configuration_valid = False
+        self.configuration_message = ""
         self.__check_config()
 
     def __check_config(self):
         """
         Checks if the configuration is valid.
+
+        Falling back to the default profile is a legitimate outcome, so this never
+        raises. It does record *why* it fell back, because the difference between "no
+        source configured" and "a source is configured but unreadable" is invisible in
+        the resulting load profile — both produce the same synthetic curve.
+
         Returns:
             bool: True if the configuration is valid, False otherwise.
         """
         if self.src not in ["openhab", "homeassistant", "default"]:
+            self.configuration_state = "invalid"
+            self.configuration_message = (
+                f"Load source '{self.src}' is not supported. "
+                "Using the built-in default load profile."
+            )
             logger.error(
                 "[LOAD-IF] Invalid source '%s' configured. Using default.", self.src
             )
             self.src = "default"
             return False
         if self.src != "default":
+            missing, where = None, "Data Source"
             if self.url == "":
-                logger.error(
-                    "[LOAD-IF] Source '%s' selected, but URL not configured. Using default.",
-                    self.src,
+                missing = "the data source URL is not configured"
+            elif self.access_token == "" and self.src == "homeassistant":
+                missing = "the Home Assistant access token is not configured"
+            elif self.load_sensor == "":
+                missing, where = "no load sensor is set", "Load"
+
+            if missing:
+                self.configuration_state = "incomplete"
+                self.configuration_message = (
+                    f"Load source '{self.src}' is selected, but {missing}. "
+                    "The built-in default load profile is used instead — set it under "
+                    f"Settings > {where} to optimize against your real consumption."
                 )
+                logger.warning("[LOAD-IF] %s", self.configuration_message)
                 self.src = "default"
                 return False
-            if self.access_token == "" and self.src == "homeassistant":
-                logger.error(
-                    "[LOAD-IF] Source '%s' selected, but access_token not configured."
-                    + " Using default.",
-                    self.src,
-                )
-                self.src = "default"
-                return False
-            if self.load_sensor == "":
-                logger.error("[LOAD-IF] Load sensor not configured. Using default.")
-                self.src = "default"
-                return False
+
             logger.debug("[LOAD-IF] Config check successful using '%s'", self.src)
         else:
             logger.debug("[LOAD-IF] Using default load profile.")
+        self.configuration_state = "valid"
+        self.configuration_valid = True
         return True
 
     def __log_request_failure(self, url, attempt, max_retries, error, item_label=""):
@@ -162,11 +200,20 @@ class LoadInterface:
             try:
                 if method.lower() == "get":
                     response = requests.get(
-                        url, params=params, headers=headers, timeout=timeout
+                        url,
+                        params=params,
+                        headers=headers,
+                        timeout=timeout,
+                        verify=not self.ssl_ignore,
                     )
                 else:
                     response = requests.request(
-                        method, url, params=params, headers=headers, timeout=timeout
+                        method,
+                        url,
+                        params=params,
+                        headers=headers,
+                        timeout=timeout,
+                        verify=not self.ssl_ignore,
                     )
                 response.raise_for_status()
                 return response
@@ -361,6 +408,72 @@ class LoadInterface:
             )
             return []
 
+    def __fill_missing_values_in_data(self, data, debug_sensor=None):
+        """
+        Forward-fill missing or invalid sensor values in historical data.
+
+        This method scans through historical sensor data and replaces invalid values
+        (empty strings, None, NaN) with the last known valid value (forward-fill/LOCF).
+        This ensures that energy calculation always has valid data and prevents 422 errors
+        when sending incomplete arrays to EOS.
+
+        Args:
+            data (dict): {"data": [ {"state": str|float, "last_updated": ISOtimestamp}, ... ]}
+            debug_sensor (str|None): Sensor name for logging
+
+        Returns:
+            dict: Modified data dict with filled values
+        """
+        if data is None or "data" not in data or len(data["data"]) == 0:
+            return data
+
+        filled_indices = []
+        last_valid_state = None
+
+        for i in range(len(data["data"])):
+            try:
+                state = data["data"][i].get("state")
+                # Check if state is valid/non-empty
+                if state is None or state == "" or state == "unavailable" or state == "unknown":
+                    # Invalid state - try to fill with last known value
+                    if last_valid_state is not None:
+                        data["data"][i]["state"] = last_valid_state
+                        filled_indices.append(i)
+                    continue
+
+                # Try to convert to float to verify it's numeric
+                numeric_val = float(state)
+
+                # Check for NaN
+                if math.isnan(numeric_val):
+                    if last_valid_state is not None:
+                        data["data"][i]["state"] = last_valid_state
+                        filled_indices.append(i)
+                    continue
+
+                # Valid numeric value - save as last known
+                last_valid_state = state
+            except (ValueError, TypeError, KeyError):
+                # Cannot convert to float - try to fill
+                if last_valid_state is not None:
+                    try:
+                        data["data"][i]["state"] = last_valid_state
+                        filled_indices.append(i)
+                    except (TypeError, KeyError):
+                        pass
+
+        # Log debug if any values were filled
+        if filled_indices:
+            logger.debug(
+                "[LOAD-IF] DATA QUALITY: Filled %d missing/invalid values in '%s' at indices %s. "
+                "Last known value was used. This indicates data gaps or corrupted states in Home Assistant history.",
+                len(filled_indices),
+                debug_sensor if debug_sensor else "unknown sensor",
+                filled_indices[:10] + ["..."] if len(filled_indices) > 10 else filled_indices
+            )
+
+        return data
+
     def __process_energy_data(self, data, debug_sensor=None):
         """
         Calculate the average power (in W) from a sequence of historical sensor samples.
@@ -394,6 +507,9 @@ class LoadInterface:
         Returns:
             float: average power in watts (W), rounded to 4 decimals. Returns 0.0 if no valid data.
         """
+        # Forward-fill missing/invalid values before processing
+        data = self.__fill_missing_values_in_data(data, debug_sensor)
+
         total_energy = 0.0
         total_duration = 0.0
         current_state = 0.0
@@ -417,32 +533,75 @@ class LoadInterface:
                 last_state = float(data["data"][i + 1]["state"])
                 current_time = datetime.fromisoformat(data["data"][i]["last_updated"])
                 next_time = datetime.fromisoformat(data["data"][i + 1]["last_updated"])
-            except (ValueError, KeyError) as e:
+            except (ValueError, KeyError, TypeError) as e:
                 debug_url = None
+                error_context = None
+                problematic_state = None
+                problematic_time = None
+
+                # Determine which datapoint caused the error
                 if self.src == "homeassistant":
-                    current_time = datetime.fromisoformat(
-                        data["data"][i]["last_updated"]
+                    try:
+                        float(data["data"][i]["state"])
+                        float(data["data"][i + 1]["state"])
+                        # If both conversions work, error must be in datetime parsing
+                        error_context = (
+                            f"[Index {i}] '{data['data'][i].get('state', 'N/A')}' @ "
+                            f"{data['data'][i].get('last_updated', 'N/A')}, "
+                            f"[Index {i+1}] '{data['data'][i+1].get('state', 'N/A')}' @ "
+                            f"{data['data'][i+1].get('last_updated', 'N/A')} (datetime parse error)"
+                        )
+                        problematic_time = None
+                    except (ValueError, KeyError):
+                        # Error is in state conversion - find which one
+                        try:
+                            float(data["data"][i]["state"])
+                            # data[i] is valid, so error is in data[i+1]
+                            problematic_state = data["data"][i + 1].get("state", "N/A")
+                            problematic_time = data["data"][i + 1].get("last_updated", "N/A")
+                            error_context = (
+                                f"[Index {i}] Valid: '{data['data'][i]['state']}' @ "
+                                f"{data['data'][i]['last_updated'].split('.')[0] if '.' in str(data['data'][i]['last_updated']) else data['data'][i]['last_updated']}, "
+                                f"[Index {i+1}] PROBLEMATIC: '{problematic_state}' @ {problematic_time}"
+                            )
+                        except (ValueError, KeyError):
+                            # Error is in data[i]
+                            problematic_state = data["data"][i].get("state", "N/A")
+                            problematic_time = data["data"][i].get("last_updated", "N/A")
+                            error_context = (
+                                f"[Index {i}] PROBLEMATIC: '{problematic_state}' @ {problematic_time}"
+                            )
+
+                    # Generate debug URL only if we have a valid timestamp
+                    if problematic_time and isinstance(problematic_time, str):
+                        try:
+                            parsed_time = datetime.fromisoformat(problematic_time)
+                            debug_url = (
+                                "(check: "
+                                + self.url
+                                + "/history?entity_id="
+                                + quote(debug_sensor)
+                                + "&start_date="
+                                + quote((parsed_time - timedelta(hours=2)).isoformat())
+                                + "&end_date="
+                                + quote((parsed_time + timedelta(hours=2)).isoformat())
+                                + ")"
+                            )
+                        except (ValueError, TypeError):
+                            debug_url = "(invalid timestamp format in data)"
+                else:
+                    # For non-HA sources, show both values for clarity
+                    error_context = (
+                        f"[Index {i}] '{data['data'][i].get('state', 'N/A')}' vs "
+                        f"[Index {i+1}] '{data['data'][i + 1].get('state', 'N/A')}'"
                     )
-                    debug_url = (
-                        "(check: "
-                        + self.url
-                        + "/history?entity_id="
-                        + quote(debug_sensor)
-                        + "&start_date="
-                        + quote((current_time - timedelta(hours=2)).isoformat())
-                        + "&end_date="
-                        + quote((current_time + timedelta(hours=2)).isoformat())
-                        + ")"
-                    )
+
                 logger.info(
-                    "[LOAD-IF] Skipping invalid sensor data for '%s' at %s: state '%s' cannot be"
-                    + " processed (%s). "
+                    "[LOAD-IF] Skipping invalid sensor data for '%s': %s "
+                    "cannot be processed (%s). "
                     "This may indicate missing or corrupted data in the database. %s",
                     debug_sensor if debug_sensor is not None else "unknown sensor",
-                    datetime.fromisoformat(data["data"][i]["last_updated"]).strftime(
-                        "%Y-%m-%d %H:%M:%S"
-                    ),
-                    data["data"][i]["state"],
+                    error_context if error_context else f"state '{problematic_state}'",
                     str(e),
                     debug_url if debug_url is not None else "",
                 )
@@ -826,12 +985,31 @@ class LoadInterface:
                     + " for 48-hour forecast"
                 )
             else:
-                logger.info(
-                    "[LOAD-IF] No recent consumption data available yet. "
-                    + "Using built-in default profile as temporary fallback. "
-                    + "This will automatically switch to real data as your system runs"
-                    + " and collects sensor data."
-                )
+                # Nothing from 7 and 14 days ago is normal on a new install; nothing
+                # from yesterday either, on a source that is actually connected, is
+                # not. Home Assistant answers an unknown entity with 200 and an empty
+                # list rather than a 404, so a wrong sensor name produces no error
+                # anywhere — it just quietly becomes this synthetic curve, and the
+                # dashboard looks plausible while the optimizer runs on fiction.
+                # The "| Config:" and "| ACTION REQUIRED" suffixes are what
+                # parseAlertMeta() in web/js/main.js turns into the startup-errors
+                # panel's badge and deep link.
+                if self.src in ("openhab", "homeassistant"):
+                    logger.warning(
+                        "[LOAD-IF] '%s' returned no consumption data for the last two "
+                        "weeks. If this is not a new installation, check that the "
+                        "sensor name is correct and that it has recorder history. "
+                        "Using the built-in default profile meanwhile. "
+                        "| Config: #load | ACTION REQUIRED",
+                        self.load_sensor,
+                    )
+                else:
+                    logger.info(
+                        "[LOAD-IF] No recent consumption data available yet. "
+                        + "Using built-in default profile as temporary fallback. "
+                        + "This will automatically switch to real data as your system runs"
+                        + " and collects sensor data."
+                    )
                 load_profile = self._get_default_profile()
                 logger.info(
                     "[LOAD-IF] Temporary default profile active -"

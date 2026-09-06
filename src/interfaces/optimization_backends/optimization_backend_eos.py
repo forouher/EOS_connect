@@ -5,14 +5,14 @@ measurement data.
 """
 
 import logging
-import sys
 import time
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 import requests
 import pandas as pd
 import numpy as np
 from packaging import version
+import pytz
 
 logger = logging.getLogger("__main__")
 
@@ -87,14 +87,119 @@ class EOSBackend:
             logger.info("[OPT-EOS] Configuration validation successful")
         except ValueError as e:
             logger.error("[OPT-EOS] EOS backend configuration error: %s", str(e))
-            logger.error("[OPT-EOS] We have to exit now ...")
-            sys.exit(1)  # Exit if configuration is invalid
+            logger.error(
+                "[OPT-EOS] EOS backend will start in degraded mode - "
+                "Use Settings to fix configuration"
+            )
+            raise  # Let caller handle graceful degradation instead of sys.exit(1)
+
+    def _get_expected_hourly_slots(self):
+        """
+        Returns the expected number of hourly slots for the 2-day window
+        (today midnight to day-after-tomorrow midnight) that the EOS server
+        validates arrays against.  Handles DST:
+        - Normal day   : 48
+        - Spring-forward: 47 (today = 23 h)
+        - Fall-back     : 49 (today = 25 h)
+        """
+        tz = self.time_zone
+        if isinstance(tz, str):
+            tz = pytz.timezone(tz)
+        today = datetime.now(tz).date()
+        today_midnight = tz.localize(
+            datetime(today.year, today.month, today.day, 0, 0, 0)
+        )
+        day_after = today + timedelta(days=2)
+        day_after_midnight = tz.localize(
+            datetime(day_after.year, day_after.month, day_after.day, 0, 0, 0)
+        )
+        return int((day_after_midnight - today_midnight).total_seconds()) // 3600
+
+    def _adjust_arrays_for_dst(self, eos_request, expected_hourly):
+        """
+        Trim or pad all time-series arrays inside eos_request so every
+        array has exactly *expected_hourly* elements (or expected_hourly * 4
+        for 15-min mode).  Sources always produce 48/192 slots; on DST days
+        old EOS servers (< 0.1.0) computed a DST-aware required slot count
+        (47 on spring-forward, 49 on fall-back) and rejected mismatched arrays.
+
+        For EOS >= 0.1.0, ``horizon_hours`` is explicitly set to 48 during
+        initialisation.  Those server versions always expect exactly 48 input
+        elements and handle DST internally.  Trimming or padding the arrays for
+        those versions causes the optimizer to receive incomplete data and return
+        ``"Optimize error: no solution stored by run."``.  We therefore skip the
+        adjustment entirely for modern EOS builds.
+
+        The adjustment is done in-place on eos_request.
+        """
+        if expected_hourly == 48:
+            return  # Normal day – nothing to do
+
+        # EOS >= 0.1.0: horizon_hours is configured to 48 by __init__.
+        # These versions always require exactly 48 elements regardless of DST.
+        if self.is_eos_version_at_least("0.1.0"):
+            logger.debug(
+                "[OPT-EOS] DST day (%d wall-clock hours) – skipping array adjustment "
+                "because EOS >= 0.1.0 uses a fixed horizon_hours=48 and handles DST "
+                "internally. Sending standard 48-slot arrays.",
+                expected_hourly,
+            )
+            return
+
+        expected_slots = (
+            expected_hourly * 4 if self.time_frame_base == 900 else expected_hourly
+        )
+
+        def _fit(arr, fill_val=0.0):
+            """Return arr trimmed or padded to expected_slots."""
+            if not arr:
+                return arr
+            if len(arr) > expected_slots:
+                return arr[:expected_slots]
+            if len(arr) < expected_slots:
+                pad = arr[-1] if arr else fill_val
+                return arr + [pad] * (expected_slots - len(arr))
+            return arr
+
+        direction = "trimmed" if expected_hourly < 48 else "extended"
+        logger.info(
+            "[OPT-EOS] DST day detected: expected %d hourly slots (%d total slots). "
+            "Arrays will be %s from standard 48-slot baseline.",
+            expected_hourly,
+            expected_slots,
+            direction,
+        )
+
+        ems = eos_request.get("ems", {})
+        for key in (
+            "pv_prognose_wh",
+            "strompreis_euro_pro_wh",
+            "einspeiseverguetung_euro_pro_wh",
+            "gesamtlast",
+        ):
+            if key in ems:
+                ems[key] = _fit(ems[key])
+
+        if "temperature_forecast" in eos_request:
+            eos_request["temperature_forecast"] = _fit(
+                eos_request["temperature_forecast"]
+            )
 
     def optimize(self, eos_request, timeout=180):
         """
         Send the optimize request to the EOS server.
         Returns (response_json, avg_runtime)
         """
+        # Adjust all arrays for DST before sending to EOS server.
+        # Sources always produce 48 (hourly) or 192 (15-min) slots.
+        # For old EOS (< 0.1.0), the server computed a DST-aware expected
+        # slot count (47 on spring-forward, 49 on fall-back) and rejected
+        # mismatched arrays.  _adjust_arrays_for_dst handles this trimming.
+        # For EOS >= 0.1.0, horizon_hours is fixed at 48 and the server
+        # handles DST internally, so _adjust_arrays_for_dst is a no-op.
+        expected_hourly = self._get_expected_hourly_slots()
+        self._adjust_arrays_for_dst(eos_request, expected_hourly)
+
         headers = {"accept": "application/json", "Content-Type": "application/json"}
         request_url = (
             self.base_url
@@ -117,7 +222,8 @@ class EOSBackend:
             elapsed_time = end_time - start_time
             minutes, seconds = divmod(elapsed_time, 60)
             logger.info(
-                "[OPT-EOS] OPTIMIZE response retrieved successfully in %d min %.2f sec for current run",
+                "[OPT-EOS] OPTIMIZE response retrieved successfully "
+                "in %d min %.2f sec for current run",
                 int(minutes),
                 seconds,
             )
@@ -136,13 +242,15 @@ class EOSBackend:
             return response.json(), avg_runtime
         except requests.exceptions.Timeout:
             logger.error(
-                "[OPT-EOS] OPTIMIZE Request timed out after %s seconds", timeout
+                "[OPT-EOS] OPTIMIZE Request timed out after %s seconds | "
+                "Config: #eos | ACTION REQUIRED",
+                timeout,
             )
             return {"error": "Request timed out - trying again with next run"}, None
         except requests.exceptions.ConnectionError as e:
             logger.error(
                 "[OPT-EOS] OPTIMIZE Connection error - EOS server not reachable at %s "
-                "will try again with next cycle - error: %s",
+                "will try again with next cycle - error: %s | Config: #eos | ACTION REQUIRED",
                 request_url,
                 str(e),
             )
@@ -164,7 +272,13 @@ class EOSBackend:
                 "[OPT-EOS] OPTIMIZE ERROR - payload for the request was:\n%s",
                 eos_request,
             )
-            return {"error": str(e)}, None
+            # The exception text is logged above but not returned: it carries the
+            # resolved host, port and any proxy in the chain, and this dict is served
+            # verbatim by GET /json/optimize_response.json.
+            return {
+                "error": f"Request to the EOS server at {self.base_url} failed "
+                "- see the log for details, will try again with next cycle"
+            }, None
 
     def __get_config_path(self, path):
         """
@@ -304,21 +418,23 @@ class EOSBackend:
         except requests.exceptions.ConnectTimeout:
             logger.error(
                 "[OPT-EOS] Failed to get EOS version  - use preset version: '%s' - Server not "
-                + "reachable: Connection to %s timed out",
+                + "reachable: Connection to %s timed out | Config: #eos | ACTION REQUIRED",
                 self.eos_version,
                 self.base_url,
             )
             return self.eos_version
         except requests.exceptions.ConnectionError as e:
             logger.error(
-                "[OPT-EOS] Failed to get EOS version - use preset version: '%s' - Connection error: %s",
+                "[OPT-EOS] Failed to get EOS version - use preset version: '%s' - "
+                "Connection error: %s | Config: #eos | ACTION REQUIRED",
                 self.eos_version,
                 e,
             )
             return self.eos_version
         except requests.exceptions.RequestException as e:
             logger.error(
-                "[OPT-EOS] Failed to get EOS version - use preset version: '%s' - Error: %s ",
+                "[OPT-EOS] Failed to get EOS version - use preset version: '%s' - "
+                "Error: %s | Config: #eos | ACTION REQUIRED",
                 self.eos_version,
                 e,
             )
@@ -350,6 +466,14 @@ class EOSBackend:
         except ImportError:
             logger.warning(
                 "[OPT-EOS] 'packaging' module not found. Cannot compare EOS versions."
+            )
+            return False
+        except version.InvalidVersion:
+            logger.warning(
+                "[OPT-EOS] Invalid EOS version string '%s'. "
+                "Cannot compare versions. Assuming version < %s",
+                self.eos_version,
+                version_string,
             )
             return False
 
