@@ -29,6 +29,7 @@ class EOSBackend:
         self.time_zone = time_zone
         self.last_optimization_runtimes = [0] * 5
         self.last_optimization_runtime_number = 0
+        self._genetic_devices_signature = None
         self.eos_version = "0.0.2"  # default
         try:
             self.eos_version = self._retrieve_eos_version()
@@ -37,15 +38,21 @@ class EOSBackend:
                 # check config for needed values
                 config_optimization = self.__get_config_path("optimization")
                 config_optimization_upodate_needed = False
-                if config_optimization.get("horizon_hours", 0) != 48:
-                    config_optimization["horizon_hours"] = 48
+                if config_optimization.get("algorithm") != "GENETIC":
+                    config_optimization["algorithm"] = "GENETIC"
                     config_optimization_upodate_needed = True
-                if config_optimization.get("genetic", None) is None:
-                    config_optimization["genetic"] = {
-                        "individuals": 300,
-                        "generations": 400,
-                    }
-                    config_optimization_upodate_needed = True
+                genetic_settings = config_optimization.setdefault("genetic", {})
+                desired_genetic_settings = {
+                    "interval_sec": self.time_frame_base,
+                    "horizon_hours": 24,
+                    "tail_horizon_hours": 0,
+                    "individuals": 300,
+                    "generations": 400,
+                }
+                for key, value in desired_genetic_settings.items():
+                    if genetic_settings.get(key) != value:
+                        genetic_settings[key] = value
+                        config_optimization_upodate_needed = True
                 if config_optimization_upodate_needed:
                     self.__set_config_path("optimization", config_optimization)
                     logger.warning(
@@ -123,25 +130,23 @@ class EOSBackend:
         old EOS servers (< 0.1.0) computed a DST-aware required slot count
         (47 on spring-forward, 49 on fall-back) and rejected mismatched arrays.
 
-        For EOS >= 0.1.0, ``horizon_hours`` is explicitly set to 48 during
-        initialisation.  Those server versions always expect exactly 48 input
-        elements and handle DST internally.  Trimming or padding the arrays for
-        those versions causes the optimizer to receive incomplete data and return
-        ``"Optimize error: no solution stored by run."``.  We therefore skip the
-        adjustment entirely for modern EOS builds.
+        Modern EOS builds use the forecast duration (normally 48 slots) and
+        handle DST internally. Trimming or padding the arrays for those
+        versions causes the optimizer to receive incomplete data, so the
+        adjustment remains limited to legacy servers.
 
         The adjustment is done in-place on eos_request.
         """
         if expected_hourly == 48:
             return  # Normal day – nothing to do
 
-        # EOS >= 0.1.0: horizon_hours is configured to 48 by __init__.
-        # These versions always require exactly 48 elements regardless of DST.
+        # Modern EOS versions handle DST internally and expect the normal
+        # forecast duration, rather than a calendar-day-adjusted array.
         if self.is_eos_version_at_least("0.1.0"):
             logger.debug(
                 "[OPT-EOS] DST day (%d wall-clock hours) – skipping array adjustment "
-                "because EOS >= 0.1.0 uses a fixed horizon_hours=48 and handles DST "
-                "internally. Sending standard 48-slot arrays.",
+                "because modern EOS handles DST internally. Sending the standard "
+                "forecast arrays.",
                 expected_hourly,
             )
             return
@@ -195,34 +200,15 @@ class EOSBackend:
         # For old EOS (< 0.1.0), the server computed a DST-aware expected
         # slot count (47 on spring-forward, 49 on fall-back) and rejected
         # mismatched arrays.  _adjust_arrays_for_dst handles this trimming.
-        # For EOS >= 0.1.0, horizon_hours is fixed at 48 and the server
-        # handles DST internally, so _adjust_arrays_for_dst is a no-op.
+        # Modern EOS handles DST internally, so _adjust_arrays_for_dst is a
+        # no-op for the GENETIC endpoint.
         expected_hourly = self._get_expected_hourly_slots()
         self._adjust_arrays_for_dst(eos_request, expected_hourly)
+        self._sync_genetic_devices(eos_request)
+        genetic_request = self._to_genetic_request(eos_request)
 
         headers = {"accept": "application/json", "Content-Type": "application/json"}
-        # start_hour is the EOS server's wire contract and means the wall-clock
-        # hour — deliberately NOT the absolute slot index the rest of EOS
-        # Connect counts in. Together with _adjust_arrays_for_dst above, this
-        # pair is the only place allowed to know a local day can be 23 or 25
-        # hours: it translates the internal fixed 48-slot grid into what an
-        # EOS < 0.1.0 server expects.
-        #
-        # KNOWN GAP, deliberately not "fixed" here: the arrays sent alongside
-        # are anchored on true local midnight, so on a DST day their index and
-        # this wall-clock hour disagree by one — at 15:00 on the 25-hour day
-        # the current slot is 16 while start_hour says 15. Making them agree
-        # means changing what an EXTERNAL server is told, and the server's own
-        # reading of start_hour cannot be verified from this side; getting it
-        # wrong would shift the whole plan on every day of the year rather than
-        # two. Left as the server's documented contract. Revisit only with a
-        # real EOS instance to test against.
-        request_url = (
-            self.base_url
-            + "/optimize"
-            + "?start_hour="
-            + str(datetime.now(self.time_zone).hour)
-        )
+        request_url = self.base_url + "/v1/optimize"
         logger.info(
             "[OPT-EOS] OPTIMIZE request optimization with: %s - and with timeout: %s",
             request_url,
@@ -232,7 +218,7 @@ class EOSBackend:
         try:
             start_time = time.time()
             response = requests.post(
-                request_url, headers=headers, json=eos_request, timeout=timeout
+                request_url, headers=headers, json=genetic_request, timeout=timeout
             )
             end_time = time.time()
             elapsed_time = end_time - start_time
@@ -255,7 +241,7 @@ class EOSBackend:
                 self.last_optimization_runtime_number + 1
             ) % 5
             avg_runtime = sum(self.last_optimization_runtimes) / 5
-            return response.json(), avg_runtime
+            return self._normalize_genetic_response(response.json()), avg_runtime
         except requests.exceptions.Timeout:
             logger.error(
                 "[OPT-EOS] OPTIMIZE Request timed out after %s seconds | "
@@ -295,6 +281,106 @@ class EOSBackend:
                 "error": f"Request to the EOS server at {self.base_url} failed "
                 "- see the log for details, will try again with next cycle"
             }, None
+
+    def _to_genetic_request(self, eos_request):
+        """Translate the legacy connector payload to the GENETIC request format."""
+        ems = eos_request.get("ems", {})
+        forecasts = {
+            "pv_forecast_wh": ems.get("pv_prognose_wh"),
+            "electricity_price_per_wh": ems.get("strompreis_euro_pro_wh"),
+            "feed_in_tariff_per_wh": ems.get("einspeiseverguetung_euro_pro_wh"),
+            "total_load": ems.get("gesamtlast"),
+        }
+        if eos_request.get("temperature_forecast") is not None:
+            forecasts["temperature_forecast"] = eos_request["temperature_forecast"]
+
+        soc = {}
+        for key in ("pv_akku", "eauto"):
+            device = eos_request.get(key) or {}
+            if (
+                device.get("device_id")
+                and device.get("initial_soc_percentage") is not None
+            ):
+                soc[device["device_id"]] = device["initial_soc_percentage"]
+
+        request = {"forecasts": forecasts}
+        if soc:
+            request["soc"] = soc
+        if eos_request.get("start_solution") is not None:
+            request["start_solution"] = eos_request["start_solution"]
+        return request
+
+    def _sync_genetic_devices(self, eos_request):
+        """Keep the remote GENETIC device configuration aligned with the connector."""
+        battery = dict(eos_request.get("pv_akku") or {})
+        if battery:
+            battery["device_id"] = battery.get("device_id", "battery1")
+        ev = dict(eos_request.get("eauto") or {})
+        if ev:
+            ev["device_id"] = ev.get("device_id", "ev1")
+        inverter = dict(eos_request.get("inverter") or {})
+        if inverter:
+            inverter["device_id"] = inverter.get("device_id", "inverter1")
+            if "max_power_wh" in inverter:
+                inverter["max_power_w"] = inverter.pop("max_power_wh")
+        appliance = dict(eos_request.get("dishwasher") or {})
+        if appliance:
+            appliance["device_id"] = appliance.get("device_id", "additional_load_1")
+            appliance.setdefault("num_cycles", 1)
+
+        updates = {
+            "devices/batteries": {battery["device_id"]: battery} if battery else {},
+            "devices/electric_vehicles": {ev["device_id"]: ev} if ev else {},
+            "devices/inverters": {inverter["device_id"]: inverter} if inverter else {},
+            "devices/home_appliances": (
+                {appliance["device_id"]: appliance} if appliance else {}
+            ),
+            "devices/max_batteries": 1 if battery else 0,
+            "devices/max_electric_vehicles": 1 if ev else 0,
+            "devices/max_inverters": 1 if inverter else 0,
+            "devices/max_home_appliances": 1 if appliance else 0,
+        }
+        signature = json.dumps(updates, sort_keys=True, default=str)
+        if signature == self._genetic_devices_signature:
+            return
+        for path, value in updates.items():
+            self.__set_config_path(path, value)
+        self._genetic_devices_signature = signature
+
+    def _normalize_genetic_response(self, response):
+        """Adapt GENETIC's run-relative controls to EOS Connect's midnight grid."""
+        if not isinstance(response, dict):
+            return response
+
+        if response.get("controls_start_at_now"):
+            now = datetime.now(self.time_zone)
+            midnight = self.time_zone.localize(
+                datetime(now.year, now.month, now.day, 0, 0, 0)
+            )
+            current_slot = int((now - midnight).total_seconds()) // self.time_frame_base
+            for key in ("ac_charge", "dc_charge", "discharge_allowed"):
+                if key in response:
+                    response[key] = [0] * current_slot + response[key]
+
+        if "washingstart" not in response:
+            starts = response.get("appliance_starts") or {}
+            first_start = next(iter(starts.values()), [])
+            if first_start:
+                timestamp = first_start[0]
+                if isinstance(timestamp, str):
+                    timestamp = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                if timestamp.tzinfo is not None:
+                    timestamp = timestamp.astimezone(self.time_zone)
+                else:
+                    timestamp = self.time_zone.localize(timestamp)
+                now = datetime.now(self.time_zone)
+                midnight = self.time_zone.localize(
+                    datetime(now.year, now.month, now.day, 0, 0, 0)
+                )
+                response["washingstart"] = int(
+                    (timestamp - midnight).total_seconds() // self.time_frame_base
+                )
+        return response
 
     def __get_config_path(self, path):
         """

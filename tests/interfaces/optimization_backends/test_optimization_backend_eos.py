@@ -83,8 +83,11 @@ class TestRetrieveEOSVersion:
         # Setup mock response for config optimization
         mock_config_opt_response = Mock()
         mock_config_opt_response.json.return_value = {
-            "horizon_hours": 48,
+            "algorithm": "GENETIC",
             "genetic": {
+                "interval_sec": 3600,
+                "horizon_hours": 24,
+                "tail_horizon_hours": 0,
                 "individuals": 300,
                 "generations": 400,
             },
@@ -408,8 +411,11 @@ class TestRetrieveEOSVersion:
         # Setup mock response for config optimization - already correct
         mock_config_opt_response = Mock()
         mock_config_opt_response.json.return_value = {
-            "horizon_hours": 48,
+            "algorithm": "GENETIC",
             "genetic": {
+                "interval_sec": 3600,
+                "horizon_hours": 24,
+                "tail_horizon_hours": 0,
                 "individuals": 300,
                 "generations": 400,
             },
@@ -471,8 +477,11 @@ class TestRetrieveEOSVersion:
         # Setup mock response for config optimization - already correct
         mock_config_opt_response = Mock()
         mock_config_opt_response.json.return_value = {
-            "horizon_hours": 48,
+            "algorithm": "GENETIC",
             "genetic": {
+                "interval_sec": 3600,
+                "horizon_hours": 24,
+                "tail_horizon_hours": 0,
                 "individuals": 300,
                 "generations": 400,
             },
@@ -1079,3 +1088,78 @@ class TestDSTHandling:
                 len(req["ems"][key]) == 192
             ), f"ems['{key}'] must remain 192 elements for EOS >= 0.1.0 in 15-min mode"
         assert len(req["temperature_forecast"]) == 192
+
+
+def test_to_genetic_request_translates_forecasts_and_soc(base_url, berlin_timezone):
+    """The external EOS backend sends the config-owned GENETIC request shape."""
+    backend = EOSBackend.__new__(EOSBackend)
+    backend.base_url = base_url
+    backend.time_frame_base = 3600
+    backend.time_zone = berlin_timezone
+
+    request = {
+        "ems": {
+            "pv_prognose_wh": [1.0],
+            "strompreis_euro_pro_wh": [0.2],
+            "einspeiseverguetung_euro_pro_wh": [0.1],
+            "gesamtlast": [3.0],
+        },
+        "temperature_forecast": [15.0],
+        "pv_akku": {"device_id": "battery1", "initial_soc_percentage": 42},
+        "eauto": {"device_id": "ev1", "initial_soc_percentage": 55},
+        "start_solution": [0, 1],
+    }
+
+    translated = backend._to_genetic_request(request)
+
+    assert translated["forecasts"] == {
+        "pv_forecast_wh": [1.0],
+        "electricity_price_per_wh": [0.2],
+        "feed_in_tariff_per_wh": [0.1],
+        "total_load": [3.0],
+        "temperature_forecast": [15.0],
+    }
+    assert translated["soc"] == {"battery1": 42, "ev1": 55}
+    assert translated["start_solution"] == [0, 1]
+
+
+@patch("src.interfaces.optimization_backends.optimization_backend_eos.requests.post")
+def test_optimize_posts_to_genetic_endpoint(mock_post, base_url, berlin_timezone):
+    """EOS Connect must call /v1/optimize rather than the legacy GENETIC0 route."""
+    backend = EOSBackend.__new__(EOSBackend)
+    backend.base_url = base_url
+    backend.time_frame_base = 3600
+    backend.time_zone = berlin_timezone
+    backend.eos_version = "0.3.0"
+    backend.last_optimization_runtimes = [0] * 5
+    backend.last_optimization_runtime_number = 0
+    backend._genetic_devices_signature = None
+    backend._get_expected_hourly_slots = Mock(return_value=48)
+    backend._adjust_arrays_for_dst = Mock()
+    backend._sync_genetic_devices = Mock()
+
+    response = Mock()
+    response.raise_for_status = Mock()
+    response.json.return_value = {
+        "ac_charge": [0.0, 1.0],
+        "dc_charge": [1.0, 1.0],
+        "discharge_allowed": [0, 1],
+        "controls_start_at_now": False,
+        "start_solution": [0, 1],
+    }
+    mock_post.return_value = response
+
+    request = {
+        "ems": {
+            "pv_prognose_wh": [1.0],
+            "strompreis_euro_pro_wh": [0.2],
+            "einspeiseverguetung_euro_pro_wh": [0.1],
+            "gesamtlast": [3.0],
+        }
+    }
+    result, runtime = backend.optimize(request)
+
+    assert result["ac_charge"] == [0.0, 1.0]
+    assert runtime >= 0
+    assert mock_post.call_args.args[0] == base_url + "/v1/optimize"
+    assert "forecasts" in mock_post.call_args.kwargs["json"]
