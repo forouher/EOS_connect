@@ -83,11 +83,8 @@ class TestRetrieveEOSVersion:
         # Setup mock response for config optimization
         mock_config_opt_response = Mock()
         mock_config_opt_response.json.return_value = {
-            "algorithm": "GENETIC",
+            "horizon_hours": 48,
             "genetic": {
-                "interval_sec": 3600,
-                "horizon_hours": 24,
-                "tail_horizon_hours": 0,
                 "individuals": 300,
                 "generations": 400,
             },
@@ -411,11 +408,8 @@ class TestRetrieveEOSVersion:
         # Setup mock response for config optimization - already correct
         mock_config_opt_response = Mock()
         mock_config_opt_response.json.return_value = {
-            "algorithm": "GENETIC",
+            "horizon_hours": 48,
             "genetic": {
-                "interval_sec": 3600,
-                "horizon_hours": 24,
-                "tail_horizon_hours": 0,
                 "individuals": 300,
                 "generations": 400,
             },
@@ -1163,3 +1157,40 @@ def test_optimize_posts_to_genetic_endpoint(mock_post, base_url, berlin_timezone
     assert runtime >= 0
     assert mock_post.call_args.args[0] == base_url + "/v1/optimize"
     assert "forecasts" in mock_post.call_args.kwargs["json"]
+
+
+@patch("src.interfaces.optimization_backends.optimization_backend_eos.requests.post")
+def test_optimize_uses_legacy_endpoint_for_old_eos(
+    mock_post, base_url, berlin_timezone
+):
+    """Older EOS servers keep receiving the legacy GENETIC0 request format."""
+    backend = EOSBackend.__new__(EOSBackend)
+    backend.base_url = base_url
+    backend.time_frame_base = 3600
+    backend.time_zone = berlin_timezone
+    backend.eos_version = "0.2.0+dev"
+    backend.last_optimization_runtimes = [0] * 5
+    backend.last_optimization_runtime_number = 0
+    backend._genetic_devices_signature = None
+    backend._get_expected_hourly_slots = Mock(return_value=48)
+    backend._adjust_arrays_for_dst = Mock()
+    backend._sync_genetic_devices = Mock()
+
+    response = Mock()
+    response.raise_for_status = Mock()
+    response.json.return_value = {
+        "ac_charge": [0.0, 1.0],
+        "dc_charge": [1.0, 1.0],
+        "discharge_allowed": [0, 1],
+        "start_solution": [0, 1],
+    }
+    mock_post.return_value = response
+
+    request = {"ems": {"pv_prognose_wh": [1.0]}}
+    result, runtime = backend.optimize(request)
+
+    assert result["ac_charge"] == [0.0, 1.0]
+    assert runtime >= 0
+    assert mock_post.call_args.args[0].startswith(base_url + "/optimize?start_hour=")
+    assert mock_post.call_args.kwargs["json"] is request
+    backend._sync_genetic_devices.assert_not_called()

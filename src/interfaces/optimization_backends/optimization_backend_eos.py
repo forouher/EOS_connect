@@ -15,6 +15,7 @@ from packaging import version
 import pytz
 
 logger = logging.getLogger("__main__")
+GENETIC_API_MIN_VERSION = "0.3.0.dev0"
 
 
 class EOSBackend:
@@ -38,20 +39,31 @@ class EOSBackend:
                 # check config for needed values
                 config_optimization = self.__get_config_path("optimization")
                 config_optimization_upodate_needed = False
-                if config_optimization.get("algorithm") != "GENETIC":
-                    config_optimization["algorithm"] = "GENETIC"
-                    config_optimization_upodate_needed = True
-                genetic_settings = config_optimization.setdefault("genetic", {})
-                desired_genetic_settings = {
-                    "interval_sec": self.time_frame_base,
-                    "horizon_hours": 24,
-                    "tail_horizon_hours": 0,
-                    "individuals": 300,
-                    "generations": 400,
-                }
-                for key, value in desired_genetic_settings.items():
-                    if genetic_settings.get(key) != value:
-                        genetic_settings[key] = value
+                if self.supports_genetic_api:
+                    if config_optimization.get("algorithm") != "GENETIC":
+                        config_optimization["algorithm"] = "GENETIC"
+                        config_optimization_upodate_needed = True
+                    genetic_settings = config_optimization.setdefault("genetic", {})
+                    desired_genetic_settings = {
+                        "interval_sec": self.time_frame_base,
+                        "horizon_hours": 24,
+                        "tail_horizon_hours": 0,
+                        "individuals": 300,
+                        "generations": 400,
+                    }
+                    for key, value in desired_genetic_settings.items():
+                        if genetic_settings.get(key) != value:
+                            genetic_settings[key] = value
+                            config_optimization_upodate_needed = True
+                else:
+                    if config_optimization.get("horizon_hours", 0) != 48:
+                        config_optimization["horizon_hours"] = 48
+                        config_optimization_upodate_needed = True
+                    if config_optimization.get("genetic", None) is None:
+                        config_optimization["genetic"] = {
+                            "individuals": 300,
+                            "generations": 400,
+                        }
                         config_optimization_upodate_needed = True
                 if config_optimization_upodate_needed:
                     self.__set_config_path("optimization", config_optimization)
@@ -66,31 +78,26 @@ class EOSBackend:
                     )
 
                 config_devices = self.__get_config_path("devices/electric_vehicles")
-                if config_devices is None:
-                    # if config_devices[0].get("charge_rates", None) is None:
-                    config_devices = [{}]
-                    config_devices[0]["charge_rates"] = sorted(
-                        [0.0, 0.375, 0.5, 0.625, 0.75, 0.875, 1.0]
-                    )
-                    self.__set_config_path("devices/electric_vehicles", config_devices)
-                    logger.warning(
-                        "[OPT-EOS] Detected EOS version >= 0.1.0 - config updated with charge "
-                        + "rates for electric vehicles"
-                    )
-                elif "charge_rates" not in config_devices[0]:
-                    config_devices[0]["charge_rates"] = sorted(
-                        [0.0, 0.375, 0.5, 0.625, 0.75, 0.875, 1.0]
-                    )
-                    self.__set_config_path("devices/electric_vehicles", config_devices)
-                    logger.warning(
-                        "[OPT-EOS] Detected EOS version >= 0.1.0 - config updated with charge "
-                        + "rates for electric vehicles"
-                    )
-                else:
-                    logger.info(
-                        "[OPT-EOS] Detected EOS version >= 0.1.0 - config charge rates for "
-                        + "electric vehicles OK"
-                    )
+                if not self.supports_genetic_api:
+                    if config_devices is None:
+                        config_devices = [{}]
+                        config_devices[0]["charge_rates"] = sorted(
+                            [0.0, 0.375, 0.5, 0.625, 0.75, 0.875, 1.0]
+                        )
+                        self.__set_config_path(
+                            "devices/electric_vehicles", config_devices
+                        )
+                        logger.warning("[OPT-EOS] Legacy EV charge rates configured")
+                    elif "charge_rates" not in config_devices[0]:
+                        config_devices[0]["charge_rates"] = sorted(
+                            [0.0, 0.375, 0.5, 0.625, 0.75, 0.875, 1.0]
+                        )
+                        self.__set_config_path(
+                            "devices/electric_vehicles", config_devices
+                        )
+                        logger.warning("[OPT-EOS] Legacy EV charge rates configured")
+                    else:
+                        logger.info("[OPT-EOS] Legacy EV charge rates are configured")
             logger.info("[OPT-EOS] Configuration validation successful")
         except ValueError as e:
             logger.error("[OPT-EOS] EOS backend configuration error: %s", str(e))
@@ -99,6 +106,11 @@ class EOSBackend:
                 "Use Settings to fix configuration"
             )
             raise  # Let caller handle graceful degradation instead of sys.exit(1)
+
+    @property
+    def supports_genetic_api(self):
+        """Whether the connected EOS server exposes the configuration-owned GENETIC API."""
+        return self.is_eos_version_at_least(GENETIC_API_MIN_VERSION)
 
     def _get_expected_hourly_slots(self):
         """
@@ -195,20 +207,27 @@ class EOSBackend:
         Send the optimize request to the EOS server.
         Returns (response_json, avg_runtime)
         """
-        # Adjust all arrays for DST before sending to EOS server.
-        # Sources always produce 48 (hourly) or 192 (15-min) slots.
-        # For old EOS (< 0.1.0), the server computed a DST-aware expected
-        # slot count (47 on spring-forward, 49 on fall-back) and rejected
-        # mismatched arrays.  _adjust_arrays_for_dst handles this trimming.
-        # Modern EOS handles DST internally, so _adjust_arrays_for_dst is a
-        # no-op for the GENETIC endpoint.
-        expected_hourly = self._get_expected_hourly_slots()
-        self._adjust_arrays_for_dst(eos_request, expected_hourly)
-        self._sync_genetic_devices(eos_request)
-        genetic_request = self._to_genetic_request(eos_request)
+        if self.supports_genetic_api:
+            # Modern EOS handles DST internally, so _adjust_arrays_for_dst is a
+            # no-op for the GENETIC endpoint.
+            expected_hourly = self._get_expected_hourly_slots()
+            self._adjust_arrays_for_dst(eos_request, expected_hourly)
+            self._sync_genetic_devices(eos_request)
+            request_payload = self._to_genetic_request(eos_request)
+            request_url = self.base_url + "/v1/optimize"
+        else:
+            # Older EOS versions only expose the legacy GENETIC0 endpoint.
+            expected_hourly = self._get_expected_hourly_slots()
+            self._adjust_arrays_for_dst(eos_request, expected_hourly)
+            request_payload = eos_request
+            request_url = (
+                self.base_url
+                + "/optimize"
+                + "?start_hour="
+                + str(datetime.now(self.time_zone).hour)
+            )
 
         headers = {"accept": "application/json", "Content-Type": "application/json"}
-        request_url = self.base_url + "/v1/optimize"
         logger.info(
             "[OPT-EOS] OPTIMIZE request optimization with: %s - and with timeout: %s",
             request_url,
@@ -218,7 +237,7 @@ class EOSBackend:
         try:
             start_time = time.time()
             response = requests.post(
-                request_url, headers=headers, json=genetic_request, timeout=timeout
+                request_url, headers=headers, json=request_payload, timeout=timeout
             )
             end_time = time.time()
             elapsed_time = end_time - start_time
@@ -241,7 +260,10 @@ class EOSBackend:
                 self.last_optimization_runtime_number + 1
             ) % 5
             avg_runtime = sum(self.last_optimization_runtimes) / 5
-            return self._normalize_genetic_response(response.json()), avg_runtime
+            response_json = response.json()
+            if self.supports_genetic_api:
+                response_json = self._normalize_genetic_response(response_json)
+            return response_json, avg_runtime
         except requests.exceptions.Timeout:
             logger.error(
                 "[OPT-EOS] OPTIMIZE Request timed out after %s seconds | "
